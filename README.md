@@ -68,36 +68,47 @@ cp .env.example .env
 LINE_CHANNEL_SECRET=
 LINE_CHANNEL_ACCESS_TOKEN=
 
-GOOGLE_OAUTH_CLIENT_JSON=/Users/shoji/Documents/LINE_Group_PDF/secrets/google-oauth-desktop.json
-GOOGLE_OAUTH_TOKEN_JSON=secrets/google-oauth-token.json
-GOOGLE_DRIVE_FOLDER_ID=
-GOOGLE_DRIVE_INDEX_FILE_ID=
+# プロバイダが1個だけ持つGoogle OAuthアプリ（Webアプリ型）
+GOOGLE_OAUTH_CLIENT_JSON=
+# 接続リンクとOAuthリダイレクトのベースURL（ローカルはngrokのURL）
+PUBLIC_BASE_URL=
+
+# テナントストア（パイロットはJSONファイル）と暗号鍵（openssl rand -hex 32）
+TENANT_STORE_PATH=data/tenants.json
+TENANT_ENCRYPTION_KEY=
 
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
 
+# 無料枠（テナントごと・月あたりの要約/保存件数, JST）
+FREE_MONTHLY_LIMIT=50
+
 PORT=3000
 ```
 
-個人用Google DriveではOAuth方式を使います。サービスアカウントは通常のマイドライブで保存容量制約に当たるため、このMVPでは推奨しません。
+このシステムは**マルチテナント**です。1つのLINE公式アカウントを各グループが
+追加し、グループごとに**自分のGoogle Drive**を接続します。各先生はGoogle Cloud
+Consoleを触らず、同意画面で「許可」を1回押すだけです。設計の詳細は
+[docs/PRODUCT_DESIGN.md](docs/PRODUCT_DESIGN.md) を参照してください。
 
-## Google Drive OAuth
+Google OAuthクライアントは**Webアプリ型**で作成し、承認済みリダイレクトURIに
+`<PUBLIC_BASE_URL>/oauth/callback` を登録します。スコープは `drive.file`
+（アプリが作成したファイルのみ）で、審査負荷を抑えます。
 
-Google Cloud ConsoleでOAuthクライアントを作る場合は、アプリケーションの種類を **デスクトップアプリ** にします。
+## グループの接続フロー
 
-初回だけ以下を実行します。
+各グループ（テナント）は次の操作だけで自分のDriveに接続します。
 
-```bash
-npm run google:auth
-```
+1. LINE公式アカウントをグループに追加する。
+2. Botがチャットに出す接続リンクをタップする（出ない場合はグループで「接続」と送信）。
+3. Googleの同意画面で「許可」を押す。
 
-表示されたURLをブラウザで開き、Google Driveへのアクセスを許可します。成功すると以下が作られます。
+これでアプリが各ユーザーのDrive内に「LINE資料アーカイブ」フォルダと
+`references.md` を作成し、以降の投稿を自動保存します。Cloud Consoleの操作は不要です。
 
-```text
-secrets/google-oauth-token.json
-```
+## プロバイダ側の設定確認
 
-Drive疎通確認:
+デプロイ前に、共有設定（OAuthクライアント・リダイレクトURI・ストア書き込み）を確認します。
 
 ```bash
 npm run check:drive
@@ -106,8 +117,10 @@ npm run check:drive
 成功例:
 
 ```text
-drive_folder LINE資料アーカイブ
-references_md ready
+oauth_client ok
+redirect_uri https://<PUBLIC_BASE_URL>/oauth/callback
+tenant_store writable data/tenants.json
+check ok
 ```
 
 ## 起動
@@ -147,8 +160,8 @@ https://<ngrokの公開URL>/line/webhook
 npm run dev          # 開発サーバー起動
 npm run build        # TypeScriptビルド
 npm run typecheck    # 型チェック
-npm run google:auth  # Google OAuthトークン発行
-npm run check:drive  # Google Drive疎通確認
+npm run check:drive  # プロバイダ設定の事前確認
+npm run google:auth  # 旧・単一テナント用のトークン発行（現フローでは未使用）
 ```
 
 ## 今日の作業ログ

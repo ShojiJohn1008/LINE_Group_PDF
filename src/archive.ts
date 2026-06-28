@@ -1,85 +1,130 @@
 import path from "node:path";
 import { AppConfig } from "./config.js";
-import { appendToIndex, createDriveClient, ensureFolder, uploadBuffer } from "./drive.js";
+import {
+  appendToIndex,
+  createDriveClient,
+  DriveClient,
+  ensureFolder,
+  uploadBuffer
+} from "./drive.js";
 import { downloadLineMessageContent } from "./line.js";
+import { pushText } from "./line-push.js";
+import { authedClient } from "./oauth.js";
 import { extractPdfText } from "./pdf.js";
+import { TenantRecord, TenantStore } from "./store.js";
 import { summarizeContent } from "./summary.js";
+import { formatDateForFile, formatYearMonth } from "./time.js";
 import { ArchiveEntry, LineMessage, LineWebhookEvent } from "./types.js";
 import { extractUrls, readWebPage } from "./web.js";
 
-export async function archiveEvent(event: LineWebhookEvent, config: AppConfig): Promise<void> {
+export type ArchiveDeps = {
+  config: AppConfig;
+  store: TenantStore;
+};
+
+export async function archiveEvent(event: LineWebhookEvent, deps: ArchiveDeps): Promise<void> {
   if (event.type !== "message" || !event.message) {
     return;
   }
 
-  const drive = createDriveClient(
-    {
-      serviceAccountJson: config.googleServiceAccountJson,
-      oauthClientJson: config.googleOAuthClientJson,
-      oauthTokenJson: config.googleOAuthTokenJson
-    },
-    config.googleDriveFolderId,
-    config.googleDriveIndexFileId
-  );
+  // Group-scoped product: events are keyed by the group (or room) they came from.
+  const groupId = event.source?.groupId || event.source?.roomId;
+  if (!groupId) {
+    return;
+  }
+
+  const tenant = deps.store.get(groupId);
+  if (!tenant) {
+    // Not connected to a Drive yet. The webhook handler prompts for connection
+    // on join / keyword; we simply do not archive until then.
+    return;
+  }
+
+  const drive = tenantDrive(deps.config, deps.store, tenant);
 
   if (isFileMessage(event.message)) {
-    const content = await downloadLineMessageContent(event.message.id, config.lineChannelAccessToken);
-    const postedAt = new Date(event.timestamp);
-    const mimeType = guessMimeType(event.message.fileName);
-    const text = mimeType === "application/pdf" ? await safeExtractPdfText(content) : "";
-    const summary = await summarizeContent({
-      apiKey: config.openAiApiKey,
-      model: config.openAiModel,
-      title: event.message.fileName,
-      sourceKind: mimeType === "application/pdf" ? "pdf" : "file",
-      text
-    });
-    const filesRootFolderId = await ensureFolder(drive, "files");
-    const filesMonthFolderId = await ensureFolder(drive, formatYearMonth(postedAt), filesRootFolderId);
-    const fileName = buildStoredFileName({
-      date: postedAt,
-      kind: mimeType === "application/pdf" ? "PDF" : "FILE",
-      label: bestContentLabel(summary.bullets, event.message.fileName),
-      extension: path.extname(event.message.fileName) || ".bin"
-    });
-    const uploaded = await uploadBuffer(drive, filesMonthFolderId, fileName, mimeType, content);
-
-    await appendToIndex(
-      drive,
-      renderArchiveEntry({
-        kind: mimeType === "application/pdf" ? "pdf" : "file",
-        postedAt,
-        senderId: event.source?.userId || "unknown",
-        groupId: event.source?.groupId || event.source?.roomId || "unknown",
-        title: event.message.fileName,
-        driveUrl: uploaded.webViewLink,
-        driveFileId: uploaded.id,
-        summary: summary.bullets,
-        tags: summary.tags,
-        notes: text ? undefined : ["PDF本文を抽出できない場合は、スキャンPDFまたは画像主体の資料の可能性があります。"]
-      })
-    );
+    await archiveFile(event, event.message, deps, tenant, groupId, drive);
   }
 
   if (isTextMessage(event.message)) {
     const urls = extractUrls(event.message.text);
     for (const url of urls) {
-      await archiveUrl(event, config, drive, url);
+      await archiveUrl(event, deps, tenant, groupId, drive, url);
     }
   }
 }
 
+async function archiveFile(
+  event: LineWebhookEvent,
+  message: Extract<LineMessage, { type: "file" }>,
+  deps: ArchiveDeps,
+  tenant: TenantRecord,
+  groupId: string,
+  drive: DriveClient
+): Promise<void> {
+  const postedAt = new Date(event.timestamp);
+  if (!(await withinQuota(deps, tenant, groupId, postedAt))) {
+    return;
+  }
+
+  const content = await downloadLineMessageContent(message.id, deps.config.lineChannelAccessToken);
+  const mimeType = guessMimeType(message.fileName);
+  const text = mimeType === "application/pdf" ? await safeExtractPdfText(content) : "";
+  const summary = await summarizeContent({
+    apiKey: deps.config.openAiApiKey,
+    model: deps.config.openAiModel,
+    title: message.fileName,
+    sourceKind: mimeType === "application/pdf" ? "pdf" : "file",
+    text
+  });
+  const filesRootFolderId = await ensureFolder(drive, "files");
+  const filesMonthFolderId = await ensureFolder(drive, formatYearMonth(postedAt), filesRootFolderId);
+  const fileName = buildStoredFileName({
+    date: postedAt,
+    kind: mimeType === "application/pdf" ? "PDF" : "FILE",
+    label: bestContentLabel(summary.bullets, message.fileName),
+    extension: path.extname(message.fileName) || ".bin"
+  });
+  const uploaded = await uploadBuffer(drive, filesMonthFolderId, fileName, mimeType, content);
+
+  await appendToIndex(
+    drive,
+    renderArchiveEntry({
+      kind: mimeType === "application/pdf" ? "pdf" : "file",
+      postedAt,
+      senderId: event.source?.userId || "unknown",
+      groupId,
+      title: message.fileName,
+      driveUrl: uploaded.webViewLink,
+      driveFileId: uploaded.id,
+      summary: summary.bullets,
+      tags: summary.tags,
+      notes: text
+        ? undefined
+        : ["PDF本文を抽出できない場合は、スキャンPDFまたは画像主体の資料の可能性があります。"]
+    })
+  );
+
+  deps.store.incrementUsage(groupId, postedAt);
+}
+
 async function archiveUrl(
   event: LineWebhookEvent,
-  config: AppConfig,
-  drive: ReturnType<typeof createDriveClient>,
+  deps: ArchiveDeps,
+  tenant: TenantRecord,
+  groupId: string,
+  drive: DriveClient,
   url: string
 ): Promise<void> {
   const postedAt = new Date(event.timestamp);
+  if (!(await withinQuota(deps, tenant, groupId, postedAt))) {
+    return;
+  }
+
   const page = await readWebPage(url);
   const summary = await summarizeContent({
-    apiKey: config.openAiApiKey,
-    model: config.openAiModel,
+    apiKey: deps.config.openAiApiKey,
+    model: deps.config.openAiModel,
     title: page.title,
     sourceKind: "url",
     text: page.text
@@ -106,7 +151,7 @@ async function archiveUrl(
       kind: "url",
       postedAt,
       senderId: event.source?.userId || "unknown",
-      groupId: event.source?.groupId || event.source?.roomId || "unknown",
+      groupId,
       title: page.title,
       originalUrl: url,
       driveUrl: uploaded.webViewLink,
@@ -115,6 +160,41 @@ async function archiveUrl(
       tags: summary.tags
     })
   );
+
+  deps.store.incrementUsage(groupId, postedAt);
+}
+
+// Free tier: stop archiving past the monthly limit. Notify the group once, on
+// the first message that crosses the line, to avoid spamming.
+async function withinQuota(
+  deps: ArchiveDeps,
+  tenant: TenantRecord,
+  groupId: string,
+  when: Date
+): Promise<boolean> {
+  const used = deps.store.getUsage(groupId, when);
+  if (used < deps.config.freeMonthlyLimit) {
+    return true;
+  }
+  if (used === deps.config.freeMonthlyLimit) {
+    // Bump once so the "===" notice fires a single time this month.
+    deps.store.incrementUsage(groupId, when);
+    await pushText(
+      groupId,
+      `今月の無料枠（${deps.config.freeMonthlyLimit}件）に達しました。来月になると自動的にリセットされます。`,
+      deps.config.lineChannelAccessToken
+    ).catch(() => undefined);
+  }
+  return false;
+}
+
+function tenantDrive(config: AppConfig, store: TenantStore, tenant: TenantRecord): DriveClient {
+  const refreshToken = store.getRefreshToken(tenant.groupId);
+  if (!refreshToken) {
+    throw new Error(`Missing refresh token for tenant ${tenant.groupId}`);
+  }
+  const auth = authedClient(config, refreshToken);
+  return createDriveClient(auth, tenant.rootFolderId, tenant.indexFileId);
 }
 
 function renderArchiveEntry(entry: ArchiveEntry): string {
@@ -192,31 +272,6 @@ function cleanupLabel(input: string): string {
     .replace(/。.*$/, "")
     .replace(/[、，].*$/, "")
     .trim();
-}
-
-function formatDateForFile(date: Date): string {
-  const parts = getJapanDateParts(date);
-  return `${parts.year}-${parts.month}-${parts.day}`;
-}
-
-function formatYearMonth(date: Date): string {
-  const parts = getJapanDateParts(date);
-  return `${parts.year}-${parts.month}`;
-}
-
-function getJapanDateParts(date: Date): { year: string; month: string; day: string } {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).formatToParts(date);
-
-  return {
-    year: parts.find((part) => part.type === "year")?.value || "0000",
-    month: parts.find((part) => part.type === "month")?.value || "00",
-    day: parts.find((part) => part.type === "day")?.value || "00"
-  };
 }
 
 function kindLabel(kind: ArchiveEntry["kind"]): string {
