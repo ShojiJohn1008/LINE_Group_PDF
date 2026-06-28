@@ -79,7 +79,9 @@ gate — always run it after code changes.
 - **Multi-tenancy is keyed by `groupId`.** One LINE webhook receives every
   group's events; `archiveEvent` demuxes by `source.groupId || source.roomId`,
   loads the tenant, and uses that tenant's Drive client. No tenant → don't
-  archive (the webhook handler prompts to connect on `join` / the "接続" keyword).
+  archive (the webhook handler prompts to connect on `join` / the "/接続"
+  command — a `/`-prefixed command, matched whole, so ordinary text containing
+  "接続" never triggers it).
 - **Drive scope is `drive.file`** (`GOOGLE_DRIVE_SCOPE` in `config.ts`) — the app
   only ever sees files it created. The archive root folder is **created and owned
   by the app** in the user's Drive (`provisionArchive`); there is no

@@ -70,7 +70,7 @@ app.post("/line/webhook", express.raw({ type: "application/json" }), (req, res) 
 app.get("/connect", (req, res) => {
   const state = String(req.query.state || "");
   if (!verifyState(state, config.stateSecret)) {
-    res.status(400).send("リンクが無効か、期限切れです。グループでもう一度「接続」と送ってください。");
+    res.status(400).send("リンクが無効か、期限切れです。グループでもう一度「/接続」と送ってください。");
     return;
   }
   res.redirect(buildGoogleAuthUrl(config, state));
@@ -83,7 +83,7 @@ app.get("/oauth/callback", async (req, res) => {
   const state = String(req.query.state || "");
   const verified = verifyState(state, config.stateSecret);
   if (!verified || !code) {
-    res.status(400).send("接続情報が無効です。グループでもう一度「接続」と送ってください。");
+    res.status(400).send("接続情報が無効です。グループでもう一度「/接続」と送ってください。");
     return;
   }
 
@@ -119,8 +119,8 @@ async function handleEvent(event: LineWebhookEvent): Promise<void> {
 
   if (event.type === "message") {
     const groupId = event.source?.groupId || event.source?.roomId;
-    // Not connected yet + the user typed the connect keyword → send the link.
-    if (groupId && !store.isConnected(groupId) && isConnectKeyword(event.message)) {
+    // Not connected yet + the user typed the connect command → send the link.
+    if (groupId && !store.isConnected(groupId) && isConnectCommand(event.message)) {
       await promptConnect(event);
       return;
     }
@@ -141,11 +141,16 @@ async function promptConnect(event: LineWebhookEvent): Promise<void> {
   }
 }
 
-function isConnectKeyword(message: LineMessage | undefined): boolean {
+// Trigger only on an explicit command: the whole message is "/接続" (or
+// "/connect"). A command prefix avoids firing on "接続" used inside ordinary
+// conversation.
+const CONNECT_COMMAND = /^\/(接続|せつぞく|connect)$/i;
+
+function isConnectCommand(message: LineMessage | undefined): boolean {
   if (!message || message.type !== "text" || typeof message.text !== "string") {
     return false;
   }
-  return /接続|せつぞく|connect/i.test(message.text);
+  return CONNECT_COMMAND.test(message.text.trim());
 }
 
 function formatErrorForLog(error: unknown): {
