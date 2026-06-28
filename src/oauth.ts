@@ -36,9 +36,13 @@ export function verifyState(token: string, secret: string): { groupId: string } 
 }
 
 // The link the bot posts into the group. Tapping it starts the Google consent.
+// `openExternalBrowser=1` tells the LINE in-app browser to open the link in the
+// system browser instead — Google rejects OAuth inside embedded webviews
+// (403 disallowed_useragent). The param is harmless to non-LINE clients and is
+// ignored by our /connect handler.
 export function buildConnectUrl(config: AppConfig, groupId: string): string {
   const state = signState(groupId, config.stateSecret);
-  return `${config.publicBaseUrl}/connect?state=${encodeURIComponent(state)}`;
+  return `${config.publicBaseUrl}/connect?state=${encodeURIComponent(state)}&openExternalBrowser=1`;
 }
 
 export function createOAuthClient(config: AppConfig) {
