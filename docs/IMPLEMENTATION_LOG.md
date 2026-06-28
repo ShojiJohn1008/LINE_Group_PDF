@@ -142,3 +142,60 @@ OAuth同意画面がテスト中で、ログインするGoogleアカウントが
 - `check:drive-write`
 - 失敗ログのDrive保存
 - 本番用Secret管理
+
+## 2026-06-28 マルチテナント化とパイロット接続
+
+単一テナントMVP（`.env` 1セット ＝ 1グループ ＝ 1Drive）から、**1つのLINE公式
+アカウントを多数のグループが追加し、各グループが自分のDriveを接続する**
+マルチテナント構成へ移行した。
+
+### プロダクト整理
+
+- ターゲットを1グループに固定：**私立総合病院・総合診療科のLINEグループ**。
+  現状はT先生がLINEとDropboxへ**二重投稿**して資料を在庫化している。その手作業を
+  「LINEに貼る＝在庫化」で消すのが第1のペイン。詳細は `docs/PRODUCT.md`。
+- 課金は **月50件まで無料、超過で有料**（メータ対象はストレージではなくOpenAI要約）。
+- 保存先は **各ユーザー自身のDrive（Option A）** に決定。提供側は全データを抱えず、
+  ユーザーは自分の情報を自由に扱える。設計は `docs/PRODUCT_DESIGN.md`。
+
+### 実装したもの
+
+- **プロバイダが Google OAuth アプリを1個だけ持つ。** ユーザーはCloud Console不要、
+  同意画面で「許可」1回。スコープは `drive.file`（制限付きスコープのCASA審査を回避、
+  アプリが作ったファイルだけ）。フォルダはアプリが各Driveに自前作成・所有。
+- **テナントストア `store.ts`**：`groupId → {refresh_token（AES-256-GCM暗号化）,
+  rootFolderId, indexFileId, 月次usage}`。パイロットはJSONファイル、`TenantStore`
+  インターフェースの裏（後でSQLite/Postgresに差し替え可能）。
+- **接続フロー**：`/connect`（state署名検証→Google同意へ）+ `/oauth/callback`
+  （code交換→Drive provision→テナント保存→グループへ完了通知）。state はHMAC署名で
+  groupId をブラウザ往復させる。
+- **イベント処理**：webhookを `groupId` で振り分け。follow（友だち追加）→使い方紹介、
+  join（グループ追加）→紹介＋接続リンク、`/接続` コマンド→リンク、message→アーカイブ。
+- **無料枠**：`FREE_MONTHLY_LIMIT`（既定50）をJST月で `archive.ts` の `withinQuota` が
+  判定。超過時はグループに1回だけ通知。
+- 新規：`oauth.ts` / `store.ts` / `line-push.ts`（Bot送信）/ `time.ts`（JST共通化）。
+
+### パイロット実機テストで詰まった点と対処
+
+- **`tsx: command not found`** … cloned直後で依存未インストール。`npm install`。
+- **`Missing required environment variable: LINE_CHANNEL_SECRET`** … `.env` の値が空。
+  `requireEnv` は空文字も未設定扱い。実値を投入して解決。
+- **`403: disallowed_useragent`**（Googleログイン時）… LINE内蔵ブラウザ（webview）での
+  OAuthをGoogleが拒否。接続リンクに **`openExternalBrowser=1`** を付け、外部ブラウザで
+  開かせて解決（`oauth.ts` の `buildConnectUrl`）。
+- **ローカルに変更が来ない** … 修正はリモートブランチにpush済みでも、ローカル実行には
+  `git pull` が必要。
+
+### トリガーの改善
+
+接続トリガーを「文中に『接続』を含む」→「**`/` で始まるコマンドと完全一致**
+（`/接続`・`/connect`・`/せつぞく`）」に変更。会話文中の「接続」で誤反応しなくなった。
+案内は日本語の `/接続` を主に見せ、`/connect` も裏で有効（グローバル対応）。
+
+### 残課題（次回以降）
+
+- Google OAuthアプリの**検証申請**（未検証は100ユーザー上限＋警告）。
+- ngrok依存をやめて**常設デプロイ**（Cloud Run等）。ngrok静的ドメインで当面しのぐ。
+- 接続済みグループの**再接続コマンド**（今は未接続グループのみ `/接続` を受付）。
+- テナントストアの**DB化**（複数インスタンス対応）。
+- 重複投稿・送信取消の対応。
