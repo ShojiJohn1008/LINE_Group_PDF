@@ -70,7 +70,7 @@ app.post("/line/webhook", express.raw({ type: "application/json" }), (req, res) 
 app.get("/connect", (req, res) => {
   const state = String(req.query.state || "");
   if (!verifyState(state, config.stateSecret)) {
-    res.status(400).send("リンクが無効か、期限切れです。グループでもう一度「接続」と送ってください。");
+    res.status(400).send("リンクが無効か、期限切れです。グループでもう一度「/接続」と送ってください。");
     return;
   }
   res.redirect(buildGoogleAuthUrl(config, state));
@@ -83,7 +83,7 @@ app.get("/oauth/callback", async (req, res) => {
   const state = String(req.query.state || "");
   const verified = verifyState(state, config.stateSecret);
   if (!verified || !code) {
-    res.status(400).send("接続情報が無効です。グループでもう一度「接続」と送ってください。");
+    res.status(400).send("接続情報が無効です。グループでもう一度「/接続」と送ってください。");
     return;
   }
 
@@ -111,41 +111,91 @@ app.listen(config.port, () => {
 });
 
 async function handleEvent(event: LineWebhookEvent): Promise<void> {
-  // Bot added to a group → prompt for Drive connection.
+  // Added as a friend (1:1). No group to connect yet → explain how to start.
+  if (event.type === "follow") {
+    await sendFollowIntro(event);
+    return;
+  }
+
+  // Bot added to a group → introduce the service and send the connect link.
   if (event.type === "join") {
-    await promptConnect(event);
+    await sendGroupWelcome(event);
     return;
   }
 
   if (event.type === "message") {
     const groupId = event.source?.groupId || event.source?.roomId;
-    // Not connected yet + the user typed the connect keyword → send the link.
-    if (groupId && !store.isConnected(groupId) && isConnectKeyword(event.message)) {
-      await promptConnect(event);
+    // Not connected yet + the user typed the connect command → send the link.
+    if (groupId && !store.isConnected(groupId) && isConnectCommand(event.message)) {
+      await sendConnectLink(event);
       return;
     }
     await archiveEvent(event, deps);
   }
 }
 
-async function promptConnect(event: LineWebhookEvent): Promise<void> {
+const FOLLOW_INTRO = [
+  "友だち追加ありがとうございます。",
+  "このBotはLINEグループに共有されたPDF・URLをGoogle Driveへ自動保存し、要約つきの索引（references.md）を作ります。",
+  "",
+  "使い方",
+  "1. このアカウントを、資料を共有したいグループに招待します。",
+  "2. グループに表示される接続リンクから、保存先のGoogle Driveを接続します（どなたか一度だけ）。",
+  "3. あとはいつも通りPDFやURLを投稿するだけ。自動で保存・要約します。",
+  "",
+  "※保存先は各グループご自身のGoogle Driveです。データは手元に残ります。"
+].join("\n");
+
+async function sendFollowIntro(event: LineWebhookEvent): Promise<void> {
+  if (event.replyToken) {
+    await replyText(event.replyToken, FOLLOW_INTRO, config.lineChannelAccessToken);
+  }
+}
+
+async function sendGroupWelcome(event: LineWebhookEvent): Promise<void> {
+  const groupId = event.source?.groupId || event.source?.roomId;
+  if (!groupId) {
+    return;
+  }
+  const text = [
+    "はじめまして。このグループに共有されたPDF・URLを、Google Driveに自動保存して要約つきで索引化します。",
+    "",
+    "まず保存先のGoogle Driveを接続してください（どなたか一度だけ）。",
+    buildConnectUrl(config, groupId),
+    "",
+    "接続後は、いつも通り資料を投稿するだけでOKです。リンクが切れたら「/接続」と送ると再表示します。"
+  ].join("\n");
+  await say(event, groupId, text);
+}
+
+async function sendConnectLink(event: LineWebhookEvent): Promise<void> {
   const groupId = event.source?.groupId || event.source?.roomId;
   if (!groupId) {
     return;
   }
   const text = ["資料を保存するGoogle Driveを接続してください。", buildConnectUrl(config, groupId)].join("\n");
+  await say(event, groupId, text);
+}
+
+// Prefer reply (free, uses the event's replyToken); fall back to push.
+async function say(event: LineWebhookEvent, to: string, text: string): Promise<void> {
   if (event.replyToken) {
     await replyText(event.replyToken, text, config.lineChannelAccessToken);
   } else {
-    await pushText(groupId, text, config.lineChannelAccessToken);
+    await pushText(to, text, config.lineChannelAccessToken);
   }
 }
 
-function isConnectKeyword(message: LineMessage | undefined): boolean {
+// Trigger only on an explicit command: the whole message is "/接続" (or
+// "/connect"). A command prefix avoids firing on "接続" used inside ordinary
+// conversation.
+const CONNECT_COMMAND = /^\/(接続|せつぞく|connect)$/i;
+
+function isConnectCommand(message: LineMessage | undefined): boolean {
   if (!message || message.type !== "text" || typeof message.text !== "string") {
     return false;
   }
-  return /接続|せつぞく|connect/i.test(message.text);
+  return CONNECT_COMMAND.test(message.text.trim());
 }
 
 function formatErrorForLog(error: unknown): {
