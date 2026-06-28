@@ -1,64 +1,46 @@
 import dotenv from "dotenv";
-import { loadConfig } from "./config.js";
-import { createDriveClient, getOrCreateIndexFile } from "./drive.js";
+import fs from "node:fs";
+import path from "node:path";
+import { loadConfig, redirectUri, GOOGLE_DRIVE_SCOPE } from "./config.js";
+import { getOAuthClientInfo, readJsonInput } from "./drive.js";
 
 dotenv.config({ override: true });
 
+// Provider-side preflight: validates the shared config a multi-tenant deploy
+// needs before any group connects. Per-tenant Drive connectivity is established
+// at OAuth time, not here.
 try {
   const config = loadConfig();
-  const client = createDriveClient(
-    {
-      serviceAccountJson: config.googleServiceAccountJson,
-      oauthClientJson: config.googleOAuthClientJson,
-      oauthTokenJson: config.googleOAuthTokenJson
-    },
-    config.googleDriveFolderId,
-    config.googleDriveIndexFileId
-  );
 
-  const folder = await client.drive.files.get({
-    fileId: config.googleDriveFolderId,
-    fields: "id, name, mimeType",
-    supportsAllDrives: true
-  });
+  const clientInfo = getOAuthClientInfo(readJsonInput(config.googleOAuthClientJson));
+  console.log("oauth_client", clientInfo.client_id ? "ok" : "missing");
+  console.log("oauth_scope", GOOGLE_DRIVE_SCOPE);
+  console.log("redirect_uri", redirectUri(config));
+  console.log("public_base_url", config.publicBaseUrl);
 
-  console.log("drive_folder", folder.data.name || folder.data.id || "found");
+  fs.mkdirSync(path.dirname(config.tenantStorePath), { recursive: true });
+  fs.accessSync(path.dirname(config.tenantStorePath), fs.constants.W_OK);
+  console.log("tenant_store", "writable", config.tenantStorePath);
 
-  const indexFileId = await getOrCreateIndexFile(client);
-  console.log("references_md", indexFileId ? "ready" : "missing");
+  console.log("openai", config.openAiApiKey ? "configured" : "not set (summaries degrade)");
+  console.log("free_monthly_limit", config.freeMonthlyLimit);
+  console.log("check", "ok");
 } catch (error) {
-  console.error(formatDriveError(error));
+  console.error(formatError(error));
   process.exit(1);
 }
 
-function formatDriveError(error: unknown): string {
-  const maybeError = error as {
-    message?: string;
-    code?: number;
-    response?: {
-      data?: {
-        error?: {
-          code?: number;
-          message?: string;
-          errors?: Array<{ reason?: string }>;
-        };
-      };
-    };
-  };
-  const apiError = maybeError.response?.data?.error;
-  const code = apiError?.code || maybeError.code || "unknown";
-  const reason = apiError?.errors?.[0]?.reason;
-  const message = apiError?.message || maybeError.message || String(error);
-
+function formatError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
   return [
-    `drive_check_failed code=${code}${reason ? ` reason=${reason}` : ""}`,
-    message,
+    `config_check_failed: ${message}`,
     "",
-    "よくある原因:",
-    "- Google Drive APIが未有効",
-    "- GOOGLE_DRIVE_FOLDER_IDのフォルダを認証ユーザー/サービスアカウントに共有していない",
-    "- 個人用マイドライブにサービスアカウントで新規作成しようとしている",
+    "確認:",
+    "- LINE_CHANNEL_SECRET / LINE_CHANNEL_ACCESS_TOKEN",
+    "- GOOGLE_OAUTH_CLIENT_JSON（Webアプリ型のOAuthクライアント）",
+    "- PUBLIC_BASE_URL（OAuthリダイレクトURIのベース）",
+    "- TENANT_ENCRYPTION_KEY（openssl rand -hex 32）",
     "",
-    "個人用Google Driveでは、サービスアカウントではなくOAuth方式を推奨します。"
+    `Google OAuthクライアントの承認済みリダイレクトURIに ${"<PUBLIC_BASE_URL>"}/oauth/callback を登録してください。`
   ].join("\n");
 }

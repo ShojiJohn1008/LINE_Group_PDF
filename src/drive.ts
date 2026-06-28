@@ -2,11 +2,13 @@ import { Readable } from "node:stream";
 import fs from "node:fs";
 import { google, drive_v3 } from "googleapis";
 
-export type DriveAuthConfig = {
-  serviceAccountJson?: string;
-  oauthClientJson?: string;
-  oauthTokenJson?: string;
-};
+export const ARCHIVE_ROOT_FOLDER_NAME = "LINE資料アーカイブ";
+const INDEX_FILE_NAME = "references.md";
+
+// googleapis bundles its own copy of google-auth-library. Derive the OAuth2
+// client type from `google.auth.OAuth2` so it agrees with what `google.drive`
+// expects and with the clients oauth.ts builds — avoids cross-package type clash.
+export type OAuthClient = InstanceType<typeof google.auth.OAuth2>;
 
 export type DriveClient = {
   drive: drive_v3.Drive;
@@ -15,12 +17,10 @@ export type DriveClient = {
 };
 
 export function createDriveClient(
-  authConfig: DriveAuthConfig,
+  auth: OAuthClient,
   rootFolderId: string,
   indexFileId?: string
 ): DriveClient {
-  const auth = createGoogleAuth(authConfig);
-
   return {
     drive: google.drive({ version: "v3", auth }),
     rootFolderId,
@@ -28,35 +28,51 @@ export function createDriveClient(
   };
 }
 
-function createGoogleAuth(authConfig: DriveAuthConfig) {
-  if (authConfig.oauthClientJson) {
-    const clientConfig = readJsonInput(authConfig.oauthClientJson);
-    const clientInfo = getOAuthClientInfo(clientConfig);
-    const oauth2Client = new google.auth.OAuth2(
-      clientInfo.client_id,
-      clientInfo.client_secret,
-      "http://127.0.0.1:53682/oauth2callback"
-    );
+// First-connect provisioning: create (or reuse) the app-owned archive folder and
+// references.md in the user's Drive. With the drive.file scope the app only ever
+// sees files it created, so list/find here only matches our own artifacts.
+export async function provisionArchive(
+  auth: OAuthClient
+): Promise<{ rootFolderId: string; indexFileId: string }> {
+  const drive = google.drive({ version: "v3", auth });
+  const rootFolderId = await ensureRootFolder(drive);
+  const client: DriveClient = { drive, rootFolderId };
+  const indexFileId = await getOrCreateIndexFile(client);
+  return { rootFolderId, indexFileId };
+}
 
-    if (!authConfig.oauthTokenJson || !fs.existsSync(authConfig.oauthTokenJson)) {
-      throw new Error(
-        "Missing Google OAuth token. Run `npm run google:auth` before using Google Drive."
-      );
-    }
+async function ensureRootFolder(drive: drive_v3.Drive): Promise<string> {
+  const existing = await drive.files.list({
+    q: [
+      `name = '${escapeDriveQuery(ARCHIVE_ROOT_FOLDER_NAME)}'`,
+      "mimeType = 'application/vnd.google-apps.folder'",
+      "trashed = false"
+    ].join(" and "),
+    fields: "files(id, name)",
+    spaces: "drive",
+    includeItemsFromAllDrives: true,
+    supportsAllDrives: true
+  });
 
-    oauth2Client.setCredentials(readJsonInput(authConfig.oauthTokenJson));
-    return oauth2Client;
+  const found = existing.data.files?.[0];
+  if (found?.id) {
+    return found.id;
   }
 
-  if (authConfig.serviceAccountJson) {
-    const credentials = readJsonInput(authConfig.serviceAccountJson);
-    return new google.auth.GoogleAuth({
-      credentials,
-      scopes: ["https://www.googleapis.com/auth/drive"]
-    });
+  const created = await drive.files.create({
+    requestBody: {
+      name: ARCHIVE_ROOT_FOLDER_NAME,
+      mimeType: "application/vnd.google-apps.folder"
+    },
+    fields: "id",
+    supportsAllDrives: true
+  });
+
+  if (!created.data.id) {
+    throw new Error("Failed to create archive root folder");
   }
 
-  throw new Error("Missing Google Drive auth config.");
+  return created.data.id;
 }
 
 export function readJsonInput(input: string): Record<string, unknown> {
@@ -168,7 +184,7 @@ export async function getOrCreateIndexFile(client: DriveClient): Promise<string>
   const existing = await client.drive.files.list({
     q: [
       `'${client.rootFolderId}' in parents`,
-      `name = 'references.md'`,
+      `name = '${INDEX_FILE_NAME}'`,
       "trashed = false"
     ].join(" and "),
     fields: "files(id, name, mimeType)",
@@ -179,17 +195,18 @@ export async function getOrCreateIndexFile(client: DriveClient): Promise<string>
 
   const found = existing.data.files?.find((file) => !isGoogleWorkspaceFile(file.mimeType));
   if (found?.id) {
+    client.indexFileId = found.id;
     return found.id;
   }
 
   const created = await client.drive.files.create({
     requestBody: {
-      name: "references.md",
+      name: INDEX_FILE_NAME,
       parents: [client.rootFolderId]
     },
     media: {
       mimeType: "text/markdown",
-      body: Readable.from(Buffer.from("# LINE資料アーカイブ\n", "utf8"))
+      body: Readable.from(Buffer.from(`# ${ARCHIVE_ROOT_FOLDER_NAME}\n`, "utf8"))
     },
     fields: "id",
     supportsAllDrives: true

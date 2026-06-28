@@ -5,6 +5,7 @@ export type LineWebhookBody = {
 export type LineWebhookEvent = {
   type: string;
   timestamp: number;
+  replyToken?: string;
   source?: {
     type: "user" | "group" | "room";
     userId?: string;

@@ -1,15 +1,32 @@
 export type AppConfig = {
+  // LINE (provider's single official account)
   lineChannelSecret: string;
   lineChannelAccessToken: string;
-  googleServiceAccountJson?: string;
-  googleOAuthClientJson?: string;
-  googleOAuthTokenJson?: string;
-  googleDriveFolderId: string;
-  googleDriveIndexFileId?: string;
+  // Google OAuth app (provider-owned, shared by all tenants).
+  // Must be a "Web application" client with `${publicBaseUrl}/oauth/callback`
+  // registered as an authorized redirect URI.
+  googleOAuthClientJson: string;
+  // Summaries (provider-owned, metered cost)
   openAiApiKey?: string;
   openAiModel: string;
+  // Server
   port: number;
+  // Public base URL used to build connect links and the OAuth redirect URI.
+  // For local pilots this is the ngrok URL (e.g. https://xxxx.ngrok-free.app).
+  publicBaseUrl: string;
+  // Multi-tenant store + secrets
+  tenantStorePath: string;
+  // 32-byte key (hex or base64) used to encrypt tenant refresh tokens at rest.
+  tenantEncryptionKey: string;
+  // Secret used to sign OAuth `state` tokens. Falls back to the LINE secret.
+  stateSecret: string;
+  // Free tier: summaries/saves per tenant per calendar month (JST).
+  freeMonthlyLimit: number;
 };
+
+// Drive scope: only files the app creates. Avoids Google's restricted-scope
+// (CASA) security assessment and never touches the user's other files.
+export const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -20,25 +37,23 @@ function requireEnv(name: string): string {
 }
 
 export function loadConfig(): AppConfig {
-  const googleServiceAccountJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON || undefined;
-  const googleOAuthClientJson = process.env.GOOGLE_OAUTH_CLIENT_JSON || undefined;
-
-  if (!googleServiceAccountJson && !googleOAuthClientJson) {
-    throw new Error(
-      "Missing Google Drive auth. Set either GOOGLE_OAUTH_CLIENT_JSON or GOOGLE_SERVICE_ACCOUNT_JSON."
-    );
-  }
+  const lineChannelSecret = requireEnv("LINE_CHANNEL_SECRET");
 
   return {
-    lineChannelSecret: requireEnv("LINE_CHANNEL_SECRET"),
+    lineChannelSecret,
     lineChannelAccessToken: requireEnv("LINE_CHANNEL_ACCESS_TOKEN"),
-    googleServiceAccountJson,
-    googleOAuthClientJson,
-    googleOAuthTokenJson: process.env.GOOGLE_OAUTH_TOKEN_JSON || "secrets/google-oauth-token.json",
-    googleDriveFolderId: requireEnv("GOOGLE_DRIVE_FOLDER_ID"),
-    googleDriveIndexFileId: process.env.GOOGLE_DRIVE_INDEX_FILE_ID || undefined,
+    googleOAuthClientJson: requireEnv("GOOGLE_OAUTH_CLIENT_JSON"),
     openAiApiKey: process.env.OPENAI_API_KEY || undefined,
     openAiModel: process.env.OPENAI_MODEL || "gpt-4.1-mini",
-    port: Number(process.env.PORT || 3000)
+    port: Number(process.env.PORT || 3000),
+    publicBaseUrl: requireEnv("PUBLIC_BASE_URL").replace(/\/+$/, ""),
+    tenantStorePath: process.env.TENANT_STORE_PATH || "data/tenants.json",
+    tenantEncryptionKey: requireEnv("TENANT_ENCRYPTION_KEY"),
+    stateSecret: process.env.OAUTH_STATE_SECRET || lineChannelSecret,
+    freeMonthlyLimit: Number(process.env.FREE_MONTHLY_LIMIT || 50)
   };
+}
+
+export function redirectUri(config: AppConfig): string {
+  return `${config.publicBaseUrl}/oauth/callback`;
 }
