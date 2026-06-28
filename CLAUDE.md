@@ -48,7 +48,7 @@ gate — always run it after code changes.
 
 | File | Responsibility |
 |------|----------------|
-| `server.ts` | Express entry point. Routes `/healthz`, `/`, `GET/POST /line/webhook`, and the OAuth web flow `GET /connect` + `GET /oauth/callback`. Verifies LINE signature, ACKs `200`, then handles events async (join/keyword → connect prompt; message → archive). |
+| `server.ts` | Express entry point. Routes `/healthz`, `/`, `GET/POST /line/webhook`, and the OAuth web flow `GET /connect` + `GET /oauth/callback`. Verifies LINE signature, ACKs `200`, then handles events async (follow → usage intro; join → welcome + connect link; "/接続" → connect link; message → archive). |
 | `archive.ts` | Orchestrator. `archiveEvent(event, deps)` looks up the tenant by `groupId`, enforces the monthly quota, then drives extraction → summary → Drive upload → index append. Owns file-naming and label cleanup. |
 | `oauth.ts` | OAuth state sign/verify (HMAC), Google auth-URL build, code→refresh-token exchange, and `authedClient()` (OAuth2 client primed with a tenant refresh token). |
 | `store.ts` | Tenant store: `groupId → { refreshToken(encrypted), rootFolderId, indexFileId, usage }`. JSON-file backend for the pilot, behind a `TenantStore` interface. AES-256-GCM at rest. Monthly usage counter (JST). |
