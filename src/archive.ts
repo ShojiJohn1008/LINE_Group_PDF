@@ -1,6 +1,7 @@
 import path from "node:path";
 import { AppConfig } from "./config.js";
 import {
+  annotateUnsent,
   appendToIndex,
   createDriveClient,
   DriveClient,
@@ -63,6 +64,11 @@ async function archiveFile(
   drive: DriveClient
 ): Promise<void> {
   const postedAt = new Date(event.timestamp);
+  const dedupKey = `file:${message.fileName}:${message.fileSize ?? "?"}`;
+  if (deps.store.isArchived(groupId, dedupKey)) {
+    console.log("skip duplicate file", { groupId, fileName: message.fileName });
+    return;
+  }
   if (!(await withinQuota(deps, tenant, groupId, postedAt))) {
     return;
   }
@@ -106,6 +112,13 @@ async function archiveFile(
   );
 
   deps.store.incrementUsage(groupId, postedAt);
+  deps.store.recordArchive(groupId, {
+    messageId: message.id,
+    dedupKey,
+    driveFileId: uploaded.id,
+    title: message.fileName,
+    kind: mimeType === "application/pdf" ? "pdf" : "file"
+  });
 }
 
 async function archiveUrl(
@@ -117,6 +130,11 @@ async function archiveUrl(
   url: string
 ): Promise<void> {
   const postedAt = new Date(event.timestamp);
+  const dedupKey = `url:${normalizeUrlForDedup(url)}`;
+  if (deps.store.isArchived(groupId, dedupKey)) {
+    console.log("skip duplicate url", { groupId, url });
+    return;
+  }
   if (!(await withinQuota(deps, tenant, groupId, postedAt))) {
     return;
   }
@@ -162,6 +180,43 @@ async function archiveUrl(
   );
 
   deps.store.incrementUsage(groupId, postedAt);
+  deps.store.recordArchive(groupId, {
+    messageId: event.message?.id ?? "unknown",
+    dedupKey,
+    driveFileId: uploaded.id,
+    title: page.title,
+    kind: "url"
+  });
+}
+
+// Strip the fragment so the same article with #anchor isn't re-archived.
+function normalizeUrlForDedup(url: string): string {
+  return url.split("#")[0].trim();
+}
+
+// A user revoked a message (LINE `unsend` event). Mark every artifact archived
+// from that message as revoked in the index. Non-destructive: the stored Drive
+// files are kept; only references.md is annotated.
+export async function handleUnsend(event: LineWebhookEvent, deps: ArchiveDeps): Promise<void> {
+  const groupId = event.source?.groupId || event.source?.roomId;
+  const messageId = event.unsend?.messageId;
+  if (!groupId || !messageId) {
+    return;
+  }
+  const tenant = deps.store.get(groupId);
+  if (!tenant) {
+    return;
+  }
+  const items = deps.store.findByMessage(groupId, messageId).filter((item) => !item.unsent);
+  if (!items.length) {
+    return;
+  }
+  const drive = tenantDrive(deps.config, deps.store, tenant);
+  await annotateUnsent(
+    drive,
+    items.map((item) => item.driveFileId)
+  );
+  deps.store.markUnsent(groupId, messageId);
 }
 
 // Free tier: stop archiving past the monthly limit. Notify the group once, on

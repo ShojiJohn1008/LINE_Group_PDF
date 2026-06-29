@@ -163,14 +163,16 @@ source of 404s. `ngrok http 3000` is used to expose the local server.
 
 ## Known limitations (don't assume these are bugs)
 
-- No de-duplication of repeated URLs/events.
 - No OCR for scanned PDFs; long PDFs are summarized from the leading text only
   (clipped to 24k chars in `summary.ts`).
-- Message-unsend (revoke) events are not handled.
 - History before the bot joined the group is unreachable.
-- The tenant store is a **single-instance JSON file** (pilot). Scaling to
-  multiple server instances needs a real DB (SQLite/Postgres) behind the same
-  `TenantStore` interface.
+- Dedup is per-tenant by URL (fragment-stripped) / by `fileName:fileSize`
+  (`isArchived`/`recordArchive` in the store). Unsend is **non-destructive**:
+  `handleUnsend` annotates the matching `references.md` entries with
+  「（送信取消済み）」 via `annotateUnsent`; the Drive files are kept.
+- The tenant store is a **single-instance** in-memory + write-through backend
+  (JSON file locally; Firestore on Cloud Run with `max-instances=1`). Scaling to
+  multiple instances needs an async `TenantStore` that reads through to the DB.
 - The Google OAuth app is unverified until submitted: capped at 100 users and
-  shows an "unverified app" screen. Fine for the pilot; verify before public
-  launch (see `docs/PRODUCT_DESIGN.md`).
+  shows an "unverified app" screen. Add testers under the consent screen's
+  "Test users". Verify before public launch (see `docs/PRODUCT_DESIGN.md`).

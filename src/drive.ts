@@ -235,6 +235,48 @@ export async function appendToIndex(client: DriveClient, markdown: string): Prom
   });
 }
 
+// Non-destructive unsend handling: mark the index entries for the given Drive
+// file ids as revoked (append a note to their heading). The stored files are
+// left in place. Entries are matched via their "- Drive file ID: <id>" line.
+export async function annotateUnsent(client: DriveClient, driveFileIds: string[]): Promise<void> {
+  if (!driveFileIds.length) {
+    return;
+  }
+  const indexFileId = await getOrCreateIndexFile(client);
+  const current = await downloadTextFile(client, indexFileId);
+  const lines = current.split("\n");
+  const ids = new Set(driveFileIds);
+  const mark = "（送信取消済み）";
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^- Drive file ID:\s*(.+?)\s*$/);
+    if (!match || !ids.has(match[1])) {
+      continue;
+    }
+    for (let j = i; j >= 0; j--) {
+      if (lines[j].startsWith("### ")) {
+        if (!lines[j].includes(mark)) {
+          lines[j] = `${lines[j]} ${mark}`;
+        }
+        break;
+      }
+    }
+  }
+
+  const next = lines.join("\n");
+  if (next === current) {
+    return;
+  }
+  await client.drive.files.update({
+    fileId: indexFileId,
+    media: {
+      mimeType: "text/markdown",
+      body: Readable.from(Buffer.from(next, "utf8"))
+    },
+    supportsAllDrives: true
+  });
+}
+
 async function downloadTextFile(client: DriveClient, fileId: string): Promise<string> {
   const response = await client.drive.files.get(
     {

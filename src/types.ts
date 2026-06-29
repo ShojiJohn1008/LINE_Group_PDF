@@ -13,6 +13,10 @@ export type LineWebhookEvent = {
     roomId?: string;
   };
   message?: LineMessage;
+  // Present on `unsend` events: the id of the message the user revoked.
+  unsend?: {
+    messageId: string;
+  };
 };
 
 export type LineMessage =

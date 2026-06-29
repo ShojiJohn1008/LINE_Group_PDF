@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
 import express from "express";
-import { archiveEvent, ArchiveDeps } from "./archive.js";
+import { archiveEvent, ArchiveDeps, handleUnsend } from "./archive.js";
 import { loadConfig } from "./config.js";
 import { verifyLineSignature } from "./line.js";
 import { pushText, replyText } from "./line-push.js";
@@ -123,10 +123,17 @@ async function handleEvent(event: LineWebhookEvent): Promise<void> {
     return;
   }
 
+  // A message was revoked → reflect it in the index.
+  if (event.type === "unsend") {
+    await handleUnsend(event, deps);
+    return;
+  }
+
   if (event.type === "message") {
     const groupId = event.source?.groupId || event.source?.roomId;
-    // Not connected yet + the user typed the connect command → send the link.
-    if (groupId && !store.isConnected(groupId) && isConnectCommand(event.message)) {
+    // The connect command works whether or not the group is already connected,
+    // so a tenant can reconnect / switch to a different Drive.
+    if (groupId && isConnectCommand(event.message)) {
       await sendConnectLink(event);
       return;
     }

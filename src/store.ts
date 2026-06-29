@@ -21,33 +21,68 @@ export type TenantConnection = {
   indexFileId: string;
 };
 
+// One archived artifact. A text message with several URLs produces several of
+// these, all sharing the same messageId (used to undo on unsend).
+export type ArchivedItem = {
+  groupId: string;
+  messageId: string;
+  dedupKey: string;
+  driveFileId: string;
+  title: string;
+  kind: string;
+  unsent: boolean;
+  createdAt: string;
+};
+
+export type ArchivedInput = {
+  messageId: string;
+  dedupKey: string;
+  driveFileId: string;
+  title: string;
+  kind: string;
+};
+
 export type TenantStore = {
   get(groupId: string): TenantRecord | undefined;
   isConnected(groupId: string): boolean;
   upsertConnection(groupId: string, connection: TenantConnection): void;
   getRefreshToken(groupId: string): string | undefined;
-  // Returns the usage count for the given date's JST month, resetting the
-  // counter when the month rolls over. Does not mutate.
   getUsage(groupId: string, when: Date): number;
-  // Increments and persists the usage counter for the date's JST month.
-  // Returns the new count.
   incrementUsage(groupId: string, when: Date): number;
+  // Dedup: has this (groupId, dedupKey) already been archived (and not unsent)?
+  isArchived(groupId: string, dedupKey: string): boolean;
+  recordArchive(groupId: string, item: ArchivedInput): void;
+  // Unsend: items archived from a given LINE message.
+  findByMessage(groupId: string, messageId: string): ArchivedItem[];
+  markUnsent(groupId: string, messageId: string): void;
+};
+
+type PersistShape = {
+  tenants: TenantRecord[];
+  archived: ArchivedItem[];
 };
 
 export function createTenantStore(filePath: string, encryptionKey: string): TenantStore {
   const key = normalizeKey(encryptionKey);
   const records = new Map<string, TenantRecord>();
+  const archived: ArchivedItem[] = [];
 
   if (fs.existsSync(filePath)) {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as TenantRecord[];
-    for (const record of parsed) {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as PersistShape | TenantRecord[];
+    // Backward compat: the original format was a bare TenantRecord[].
+    const tenants = Array.isArray(parsed) ? parsed : parsed.tenants;
+    for (const record of tenants) {
       records.set(record.groupId, record);
+    }
+    if (!Array.isArray(parsed) && parsed.archived) {
+      archived.push(...parsed.archived);
     }
   }
 
   function persist(): void {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(Array.from(records.values()), null, 2));
+    const shape: PersistShape = { tenants: Array.from(records.values()), archived };
+    fs.writeFileSync(filePath, JSON.stringify(shape, null, 2));
   }
 
   function reconcileMonth(record: TenantRecord, when: Date): TenantRecord {
@@ -101,6 +136,39 @@ export function createTenantStore(filePath: string, encryptionKey: string): Tena
       record.usageCount += 1;
       persist();
       return record.usageCount;
+    },
+    isArchived(groupId, dedupKey) {
+      return archived.some(
+        (item) => item.groupId === groupId && item.dedupKey === dedupKey && !item.unsent
+      );
+    },
+    recordArchive(groupId, item) {
+      archived.push({
+        groupId,
+        messageId: item.messageId,
+        dedupKey: item.dedupKey,
+        driveFileId: item.driveFileId,
+        title: item.title,
+        kind: item.kind,
+        unsent: false,
+        createdAt: new Date().toISOString()
+      });
+      persist();
+    },
+    findByMessage(groupId, messageId) {
+      return archived.filter((item) => item.groupId === groupId && item.messageId === messageId);
+    },
+    markUnsent(groupId, messageId) {
+      let changed = false;
+      for (const item of archived) {
+        if (item.groupId === groupId && item.messageId === messageId && !item.unsent) {
+          item.unsent = true;
+          changed = true;
+        }
+      }
+      if (changed) {
+        persist();
+      }
     }
   };
 }
@@ -136,3 +204,6 @@ function decrypt(payload: string, key: Buffer): string {
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
 }
+
+// Shared with the Firestore backend so refresh tokens are encrypted there too.
+export { encrypt as encryptSecret, decrypt as decryptSecret, normalizeKey as normalizeEncryptionKey };
