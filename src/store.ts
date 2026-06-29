@@ -57,42 +57,25 @@ export type TenantStore = {
   markUnsent(groupId: string, messageId: string): void;
 };
 
-type PersistShape = {
-  tenants: TenantRecord[];
-  archived: ArchivedItem[];
+// Write-through hooks. The JSON backend rewrites the whole file; the Firestore
+// backend writes per document. The engine logic below is identical for both, so
+// dedup/usage/unsend behavior can't drift between backends.
+export type Persistence = {
+  persistTenant(record: TenantRecord): void;
+  persistArchive(item: ArchivedItem): void;
+  persistUnsend(items: ArchivedItem[]): void;
 };
 
-export function createTenantStore(filePath: string, encryptionKey: string): TenantStore {
-  const key = normalizeKey(encryptionKey);
-  const records = new Map<string, TenantRecord>();
-  const archived: ArchivedItem[] = [];
-
-  if (fs.existsSync(filePath)) {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as PersistShape | TenantRecord[];
-    // Backward compat: the original format was a bare TenantRecord[].
-    const tenants = Array.isArray(parsed) ? parsed : parsed.tenants;
-    for (const record of tenants) {
-      records.set(record.groupId, record);
-    }
-    if (!Array.isArray(parsed) && parsed.archived) {
-      archived.push(...parsed.archived);
-    }
-  }
-
-  function persist(): void {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const shape: PersistShape = { tenants: Array.from(records.values()), archived };
-    fs.writeFileSync(filePath, JSON.stringify(shape, null, 2));
-  }
-
-  function reconcileMonth(record: TenantRecord, when: Date): TenantRecord {
-    const month = formatYearMonth(when);
-    if (record.usageMonth !== month) {
-      record.usageMonth = month;
-      record.usageCount = 0;
-    }
-    return record;
-  }
+// In-memory engine operating directly on caller-owned collections. Backends seed
+// these from disk/Firestore and supply persistence; the engine mutates them in
+// place so the backend's persist hooks always see current state.
+export function createMemoryStore(
+  encryptionKey: string,
+  records: Map<string, TenantRecord>,
+  archived: ArchivedItem[],
+  persistence: Persistence
+): TenantStore {
+  const key = normalizeEncryptionKey(encryptionKey);
 
   return {
     get(groupId) {
@@ -105,7 +88,7 @@ export function createTenantStore(filePath: string, encryptionKey: string): Tena
       const existing = records.get(groupId);
       const record: TenantRecord = {
         groupId,
-        refreshTokenEnc: encrypt(connection.refreshToken, key),
+        refreshTokenEnc: encryptSecret(connection.refreshToken, key),
         rootFolderId: connection.rootFolderId,
         indexFileId: connection.indexFileId,
         connectedAt: existing?.connectedAt || new Date().toISOString(),
@@ -113,28 +96,31 @@ export function createTenantStore(filePath: string, encryptionKey: string): Tena
         usageCount: existing?.usageCount || 0
       };
       records.set(groupId, record);
-      persist();
+      persistence.persistTenant(record);
     },
     getRefreshToken(groupId) {
       const record = records.get(groupId);
-      return record ? decrypt(record.refreshTokenEnc, key) : undefined;
+      return record ? decryptSecret(record.refreshTokenEnc, key) : undefined;
     },
     getUsage(groupId, when) {
       const record = records.get(groupId);
       if (!record) {
         return 0;
       }
-      const month = formatYearMonth(when);
-      return record.usageMonth === month ? record.usageCount : 0;
+      return record.usageMonth === formatYearMonth(when) ? record.usageCount : 0;
     },
     incrementUsage(groupId, when) {
       const record = records.get(groupId);
       if (!record) {
         return 0;
       }
-      reconcileMonth(record, when);
+      const month = formatYearMonth(when);
+      if (record.usageMonth !== month) {
+        record.usageMonth = month;
+        record.usageCount = 0;
+      }
       record.usageCount += 1;
-      persist();
+      persistence.persistTenant(record);
       return record.usageCount;
     },
     isArchived(groupId, dedupKey) {
@@ -143,7 +129,7 @@ export function createTenantStore(filePath: string, encryptionKey: string): Tena
       );
     },
     recordArchive(groupId, item) {
-      archived.push({
+      const record: ArchivedItem = {
         groupId,
         messageId: item.messageId,
         dedupKey: item.dedupKey,
@@ -152,28 +138,64 @@ export function createTenantStore(filePath: string, encryptionKey: string): Tena
         kind: item.kind,
         unsent: false,
         createdAt: new Date().toISOString()
-      });
-      persist();
+      };
+      archived.push(record);
+      persistence.persistArchive(record);
     },
     findByMessage(groupId, messageId) {
       return archived.filter((item) => item.groupId === groupId && item.messageId === messageId);
     },
     markUnsent(groupId, messageId) {
-      let changed = false;
+      const changed: ArchivedItem[] = [];
       for (const item of archived) {
         if (item.groupId === groupId && item.messageId === messageId && !item.unsent) {
           item.unsent = true;
-          changed = true;
+          changed.push(item);
         }
       }
-      if (changed) {
-        persist();
+      if (changed.length) {
+        persistence.persistUnsend(changed);
       }
     }
   };
 }
 
-function normalizeKey(input: string): Buffer {
+// JSON-file backend (default; pilot / local dev). Rewrites the whole file on
+// every mutation — fine at pilot scale, single instance.
+export function createTenantStore(filePath: string, encryptionKey: string): TenantStore {
+  const records = new Map<string, TenantRecord>();
+  const archived: ArchivedItem[] = [];
+
+  if (fs.existsSync(filePath)) {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as
+      | { tenants?: TenantRecord[]; archived?: ArchivedItem[] }
+      | TenantRecord[];
+    // Backward compat: the original format was a bare TenantRecord[].
+    const tenants = Array.isArray(parsed) ? parsed : parsed.tenants || [];
+    for (const record of tenants) {
+      records.set(record.groupId, record);
+    }
+    if (!Array.isArray(parsed) && parsed.archived) {
+      archived.push(...parsed.archived);
+    }
+  }
+
+  function persistAll(): void {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({ tenants: Array.from(records.values()), archived }, null, 2)
+    );
+  }
+
+  return createMemoryStore(encryptionKey, records, archived, {
+    persistTenant: persistAll,
+    persistArchive: persistAll,
+    persistUnsend: persistAll
+  });
+}
+
+export function normalizeEncryptionKey(input: string): Buffer {
   const trimmed = input.trim();
   const buffer = /^[0-9a-fA-F]{64}$/.test(trimmed)
     ? Buffer.from(trimmed, "hex")
@@ -187,7 +209,7 @@ function normalizeKey(input: string): Buffer {
   return buffer;
 }
 
-function encrypt(plaintext: string, key: Buffer): string {
+export function encryptSecret(plaintext: string, key: Buffer): string {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
@@ -195,7 +217,7 @@ function encrypt(plaintext: string, key: Buffer): string {
   return Buffer.concat([iv, tag, ciphertext]).toString("base64");
 }
 
-function decrypt(payload: string, key: Buffer): string {
+export function decryptSecret(payload: string, key: Buffer): string {
   const buffer = Buffer.from(payload, "base64");
   const iv = buffer.subarray(0, 12);
   const tag = buffer.subarray(12, 28);
@@ -204,6 +226,3 @@ function decrypt(payload: string, key: Buffer): string {
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
 }
-
-// Shared with the Firestore backend so refresh tokens are encrypted there too.
-export { encrypt as encryptSecret, decrypt as decryptSecret, normalizeKey as normalizeEncryptionKey };

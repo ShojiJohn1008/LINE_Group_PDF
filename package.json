@@ -12,6 +12,7 @@
     "google:auth": "tsx src/google-auth.ts"
   },
   "dependencies": {
+    "@google-cloud/firestore": "^8.6.0",
     "@mozilla/readability": "^0.6.0",
     "dotenv": "^17.4.2",
     "express": "^5.1.0",

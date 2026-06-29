@@ -12,13 +12,20 @@ import {
   verifyState
 } from "./oauth.js";
 import { provisionArchive } from "./drive.js";
-import { createTenantStore } from "./store.js";
+import { createTenantStore, TenantStore } from "./store.js";
+import { createFirestoreTenantStore } from "./store-firestore.js";
 import { LineMessage, LineWebhookBody, LineWebhookEvent } from "./types.js";
 
 dotenv.config({ override: true });
 
 const config = loadConfig();
-const store = createTenantStore(config.tenantStorePath, config.tenantEncryptionKey);
+const store: TenantStore =
+  config.tenantBackend === "firestore"
+    ? await createFirestoreTenantStore({
+        encryptionKey: config.tenantEncryptionKey,
+        projectId: config.googleCloudProject
+      })
+    : createTenantStore(config.tenantStorePath, config.tenantEncryptionKey);
 const deps: ArchiveDeps = { config, store };
 
 const app = express();

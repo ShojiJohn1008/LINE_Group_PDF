@@ -51,7 +51,8 @@ gate — always run it after code changes.
 | `server.ts` | Express entry point. Routes `/healthz`, `/`, `GET/POST /line/webhook`, and the OAuth web flow `GET /connect` + `GET /oauth/callback`. Verifies LINE signature, ACKs `200`, then handles events async (follow → usage intro; join → welcome + connect link; "/接続" → connect link; message → archive). |
 | `archive.ts` | Orchestrator. `archiveEvent(event, deps)` looks up the tenant by `groupId`, enforces the monthly quota, then drives extraction → summary → Drive upload → index append. Owns file-naming and label cleanup. |
 | `oauth.ts` | OAuth state sign/verify (HMAC), Google auth-URL build, code→refresh-token exchange, and `authedClient()` (OAuth2 client primed with a tenant refresh token). |
-| `store.ts` | Tenant store: `groupId → { refreshToken(encrypted), rootFolderId, indexFileId, usage }`. JSON-file backend for the pilot, behind a `TenantStore` interface. AES-256-GCM at rest. Monthly usage counter (JST). |
+| `store.ts` | Tenant store behind a `TenantStore` interface: `groupId → { refreshToken(encrypted), rootFolderId, indexFileId, usage }` plus archived-item tracking (dedup + unsend). Shared in-memory engine (`createMemoryStore`) + JSON-file backend (`createTenantStore`). AES-256-GCM at rest. Monthly usage counter (JST). |
+| `store-firestore.ts` | Firestore backend (`createFirestoreTenantStore`) for Cloud Run. Same engine, write-through per document; single-instance (hydrated cache). |
 | `line.ts` | Inbound: LINE HMAC-SHA256 signature verification + message content download. |
 | `line-push.ts` | Outbound: bot reply/push (connect link, completion + quota notices). |
 | `drive.ts` | Per-tenant Google Drive client (built from a refresh token), `drive.file` scope, `provisionArchive()` (create/own root folder + `references.md`), folder ensure/create, buffer upload, index append. |
@@ -141,9 +142,11 @@ LINE webhook requests are authenticated by HMAC signature
 See `.env.example`. Required: `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`,
 `GOOGLE_OAUTH_CLIENT_JSON`, `PUBLIC_BASE_URL`, `TENANT_ENCRYPTION_KEY`
 (`openssl rand -hex 32`). Optional: `OPENAI_API_KEY`, `OPENAI_MODEL` (default
-`gpt-4.1-mini`), `TENANT_STORE_PATH` (default `data/tenants.json`),
-`OAUTH_STATE_SECRET` (defaults to the LINE secret), `FREE_MONTHLY_LIMIT`
-(default `50`), `PORT` (default `3000`).
+`gpt-4.1-mini`), `TENANT_BACKEND` (`json` default, or `firestore`),
+`TENANT_STORE_PATH` (default `data/tenants.json`), `GOOGLE_CLOUD_PROJECT`
+(Firestore), `OAUTH_STATE_SECRET` (defaults to the LINE secret),
+`FREE_MONTHLY_LIMIT` (default `50`), `PORT` (default `3000`, injected by Cloud
+Run). Cloud Run + Firestore deploy steps: `docs/DEPLOY.md`.
 
 `npm run check:drive` validates this provider config before deploy. After
 editing `.env`, **restart `npm run dev`** — it does not hot-reload env.
