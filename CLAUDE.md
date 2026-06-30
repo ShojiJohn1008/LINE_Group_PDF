@@ -48,7 +48,7 @@ gate — always run it after code changes.
 
 | File | Responsibility |
 |------|----------------|
-| `server.ts` | Express entry point. Routes `/healthz`, `/`, `GET/POST /line/webhook`, and the OAuth web flow `GET /connect` + `GET /oauth/callback`. Verifies LINE signature, ACKs `200`, then handles events async (follow → usage intro; join → welcome + connect link; "/接続" → connect link; message → archive). |
+| `server.ts` | Express entry point. Routes `/healthz`, `/`, `GET/POST /line/webhook`, the OAuth web flow `GET /connect` + `GET /oauth/callback`, and the read-only web dashboard `GET /view/:token`. Verifies LINE signature, ACKs `200`, then handles events async (follow → usage intro; join → welcome + connect link; "/接続" → connect link; "/一覧" → dashboard link; message → archive). |
 | `archive.ts` | Orchestrator. `archiveEvent(event, deps)` looks up the tenant by `groupId`, enforces the monthly quota, then drives extraction → summary → Drive upload → index append. Owns file-naming and label cleanup. |
 | `oauth.ts` | OAuth state sign/verify (HMAC), Google auth-URL build, code→refresh-token exchange, and `authedClient()` (OAuth2 client primed with a tenant refresh token). |
 | `store.ts` | Tenant store behind a `TenantStore` interface: `groupId → { refreshToken(encrypted), rootFolderId, indexFileId, usage }` plus archived-item tracking (dedup + unsend). Shared in-memory engine (`createMemoryStore`) + JSON-file backend (`createTenantStore`). AES-256-GCM at rest. Monthly usage counter (JST). |
@@ -57,6 +57,7 @@ gate — always run it after code changes.
 | `line-push.ts` | Outbound: bot reply/push (connect link, completion + quota notices). |
 | `drive.ts` | Per-tenant Google Drive client (built from a refresh token), `drive.file` scope, `provisionArchive()` (create/own root folder + `references.md`), folder ensure/create, buffer upload, index append. |
 | `sheet.ts` | Google Sheets "dashboard" index (`資料ダッシュボード`): `provisionDashboard()` + `appendDashboardRow()`. Same `drive.file` scope (app-created file); all calls best-effort (never block archiving). Requires the Sheets API enabled. |
+| `view.ts` | `renderDashboardHtml()` — self-contained, read-only web dashboard (search/filter/cards). Served at `/view/:token`; items embedded as JSON and rendered via `textContent` (XSS-safe), links restricted to http(s). |
 | `summary.ts` | OpenAI summarization → `{ bullets, tags }`. Degrades gracefully (never throws) when key missing or API fails. |
 | `web.ts` | Fetch URL, extract readable text + build Markdown snapshot, plus `extractUrls()` regex. |
 | `pdf.ts` | PDF → normalized text. |
@@ -181,3 +182,7 @@ source of 404s. `ngrok http 3000` is used to expose the local server.
 - The Google OAuth app is unverified until submitted: capped at 100 users and
   shows an "unverified app" screen. Add testers under the consent screen's
   "Test users". Verify before public launch (see `docs/PRODUCT_DESIGN.md`).
+- The web dashboard (`/view/:token`) is **capability-URL gated**: anyone with the
+  link can view that group's items (read-only). The per-tenant `viewToken` is
+  stable across reconnects; there is no rotation/revoke command yet. It renders
+  from the store (enriched `ArchivedItem` fields), not from the tenant's Drive.

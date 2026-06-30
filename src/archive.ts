@@ -118,7 +118,12 @@ async function archiveFile(
     dedupKey,
     driveFileId: uploaded.id,
     title: message.fileName,
-    kind: mimeType === "application/pdf" ? "pdf" : "file"
+    kind: mimeType === "application/pdf" ? "pdf" : "file",
+    postedAt: postedAt.toISOString(),
+    tags: summary.tags,
+    summary: summary.bullets,
+    driveUrl: uploaded.webViewLink ?? "",
+    originalUrl: ""
   });
   await appendDashboard(deps, tenant, [
     formatDateForFile(postedAt),
@@ -195,7 +200,12 @@ async function archiveUrl(
     dedupKey,
     driveFileId: uploaded.id,
     title: page.title,
-    kind: "url"
+    kind: "url",
+    postedAt: postedAt.toISOString(),
+    tags: summary.tags,
+    summary: summary.bullets,
+    driveUrl: uploaded.webViewLink ?? "",
+    originalUrl: url
   });
   await appendDashboard(deps, tenant, [
     formatDateForFile(postedAt),

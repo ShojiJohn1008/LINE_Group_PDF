@@ -13,6 +13,9 @@ export type TenantRecord = {
   // Dashboard spreadsheet id. Optional: tenants connected before the dashboard
   // feature have none until they reconnect.
   sheetId?: string;
+  // Unguessable capability token for the read-only web dashboard (/view/:token).
+  // Generated on connect; stable across reconnects.
+  viewToken?: string;
   connectedAt: string;
   usageMonth: string;
   usageCount: number;
@@ -34,6 +37,12 @@ export type ArchivedItem = {
   driveFileId: string;
   title: string;
   kind: string;
+  // Display fields for the web dashboard.
+  postedAt: string;
+  tags: string[];
+  summary: string[];
+  driveUrl: string;
+  originalUrl: string;
   unsent: boolean;
   createdAt: string;
 };
@@ -44,10 +53,16 @@ export type ArchivedInput = {
   driveFileId: string;
   title: string;
   kind: string;
+  postedAt: string;
+  tags: string[];
+  summary: string[];
+  driveUrl: string;
+  originalUrl: string;
 };
 
 export type TenantStore = {
   get(groupId: string): TenantRecord | undefined;
+  getByViewToken(token: string): TenantRecord | undefined;
   isConnected(groupId: string): boolean;
   upsertConnection(groupId: string, connection: TenantConnection): void;
   getRefreshToken(groupId: string): string | undefined;
@@ -59,6 +74,8 @@ export type TenantStore = {
   // Unsend: items archived from a given LINE message.
   findByMessage(groupId: string, messageId: string): ArchivedItem[];
   markUnsent(groupId: string, messageId: string): void;
+  // Web dashboard: all items for a group, newest first.
+  listArchived(groupId: string): ArchivedItem[];
 };
 
 // Write-through hooks. The JSON backend rewrites the whole file; the Firestore
@@ -96,12 +113,24 @@ export function createMemoryStore(
         rootFolderId: connection.rootFolderId,
         indexFileId: connection.indexFileId,
         sheetId: connection.sheetId ?? existing?.sheetId,
+        viewToken: existing?.viewToken || crypto.randomBytes(24).toString("base64url"),
         connectedAt: existing?.connectedAt || new Date().toISOString(),
         usageMonth: existing?.usageMonth || formatYearMonth(new Date()),
         usageCount: existing?.usageCount || 0
       };
       records.set(groupId, record);
       persistence.persistTenant(record);
+    },
+    getByViewToken(token) {
+      if (!token) {
+        return undefined;
+      }
+      for (const record of records.values()) {
+        if (record.viewToken === token) {
+          return record;
+        }
+      }
+      return undefined;
     },
     getRefreshToken(groupId) {
       const record = records.get(groupId);
@@ -141,6 +170,11 @@ export function createMemoryStore(
         driveFileId: item.driveFileId,
         title: item.title,
         kind: item.kind,
+        postedAt: item.postedAt,
+        tags: item.tags,
+        summary: item.summary,
+        driveUrl: item.driveUrl,
+        originalUrl: item.originalUrl,
         unsent: false,
         createdAt: new Date().toISOString()
       };
@@ -149,6 +183,11 @@ export function createMemoryStore(
     },
     findByMessage(groupId, messageId) {
       return archived.filter((item) => item.groupId === groupId && item.messageId === messageId);
+    },
+    listArchived(groupId) {
+      return archived
+        .filter((item) => item.groupId === groupId)
+        .sort((a, b) => (a.postedAt < b.postedAt ? 1 : a.postedAt > b.postedAt ? -1 : 0));
     },
     markUnsent(groupId, messageId) {
       const changed: ArchivedItem[] = [];

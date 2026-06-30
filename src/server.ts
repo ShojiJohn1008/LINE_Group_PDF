@@ -15,7 +15,9 @@ import { provisionArchive } from "./drive.js";
 import { provisionDashboard } from "./sheet.js";
 import { createTenantStore, TenantStore } from "./store.js";
 import { createFirestoreTenantStore } from "./store-firestore.js";
+import { formatDateForFile } from "./time.js";
 import { LineMessage, LineWebhookBody, LineWebhookEvent } from "./types.js";
+import { renderDashboardHtml } from "./view.js";
 
 dotenv.config({ override: true });
 
@@ -106,11 +108,12 @@ app.get("/oauth/callback", async (req, res) => {
     });
     store.upsertConnection(verified.groupId, { refreshToken, rootFolderId, indexFileId, sheetId });
 
-    await pushText(
-      verified.groupId,
+    const viewUrl = viewUrlFor(verified.groupId);
+    const doneText = [
       "接続が完了しました。これ以降、グループに共有されたPDF・URLを自動でGoogle Driveに保存し、要約付きで索引化します。",
-      config.lineChannelAccessToken
-    ).catch(() => undefined);
+      viewUrl ? `\n資料一覧ダッシュボード（いつでも「/一覧」で再表示）:\n${viewUrl}` : ""
+    ].join("");
+    await pushText(verified.groupId, doneText, config.lineChannelAccessToken).catch(() => undefined);
 
     res.send("Google Driveの接続が完了しました。LINEに戻ってください。");
   } catch (error) {
@@ -119,9 +122,35 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
+// Read-only web dashboard, gated by an unguessable per-group token.
+app.get("/view/:token", (req, res) => {
+  const tenant = store.getByViewToken(req.params.token);
+  if (!tenant) {
+    res.status(404).send("ページが見つかりません。リンクが無効か、失効しています。");
+    return;
+  }
+  const items = store.listArchived(tenant.groupId).map((item) => ({
+    kind: item.kind,
+    title: item.title,
+    date: formatDateForFile(new Date(item.postedAt)),
+    tags: item.tags || [],
+    summary: item.summary || [],
+    driveUrl: item.driveUrl || "",
+    originalUrl: item.originalUrl || "",
+    unsent: item.unsent
+  }));
+  res.set("content-type", "text/html; charset=utf-8");
+  res.send(renderDashboardHtml({ title: "資料アーカイブ", items }));
+});
+
 app.listen(config.port, () => {
   console.log(`LINE archive server listening on :${config.port}`);
 });
+
+function viewUrlFor(groupId: string): string | undefined {
+  const token = store.get(groupId)?.viewToken;
+  return token ? `${config.publicBaseUrl}/view/${token}` : undefined;
+}
 
 async function handleEvent(event: LineWebhookEvent): Promise<void> {
   // Added as a friend (1:1). No group to connect yet → explain how to start.
@@ -148,6 +177,11 @@ async function handleEvent(event: LineWebhookEvent): Promise<void> {
     // so a tenant can reconnect / switch to a different Drive.
     if (groupId && isConnectCommand(event.message)) {
       await sendConnectLink(event);
+      return;
+    }
+    // Dashboard command → reply with the read-only web view link.
+    if (groupId && isDashboardCommand(event.message)) {
+      await sendDashboardLink(event, groupId);
       return;
     }
     await archiveEvent(event, deps);
@@ -210,12 +244,29 @@ async function say(event: LineWebhookEvent, to: string, text: string): Promise<v
 // "/connect"). A command prefix avoids firing on "接続" used inside ordinary
 // conversation.
 const CONNECT_COMMAND = /^\/(接続|せつぞく|connect)$/i;
+const DASHBOARD_COMMAND = /^\/(一覧|ダッシュボード|dashboard)$/i;
 
 function isConnectCommand(message: LineMessage | undefined): boolean {
+  return matchesCommand(message, CONNECT_COMMAND);
+}
+
+function isDashboardCommand(message: LineMessage | undefined): boolean {
+  return matchesCommand(message, DASHBOARD_COMMAND);
+}
+
+function matchesCommand(message: LineMessage | undefined, pattern: RegExp): boolean {
   if (!message || message.type !== "text" || typeof message.text !== "string") {
     return false;
   }
-  return CONNECT_COMMAND.test(message.text.trim());
+  return pattern.test(message.text.trim());
+}
+
+async function sendDashboardLink(event: LineWebhookEvent, groupId: string): Promise<void> {
+  const url = viewUrlFor(groupId);
+  const text = url
+    ? `資料一覧ダッシュボード:\n${url}`
+    : "まだGoogle Driveに接続されていません。「/接続」で接続してください。";
+  await say(event, groupId, text);
 }
 
 function formatErrorForLog(error: unknown): {
