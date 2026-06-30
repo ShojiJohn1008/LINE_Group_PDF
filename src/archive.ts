@@ -273,8 +273,8 @@ export async function handleUnsend(event: LineWebhookEvent, deps: ArchiveDeps): 
   deps.store.markUnsent(groupId, messageId);
 }
 
-// Free tier: stop archiving past the monthly limit. Notify the group once, on
-// the first message that crosses the line, to avoid spamming.
+// Free tier: stop archiving past the monthly limit. Notify on every blocked
+// item so users understand why a posted resource was not archived.
 async function withinQuota(
   deps: ArchiveDeps,
   tenant: TenantRecord,
@@ -285,15 +285,11 @@ async function withinQuota(
   if (used < deps.config.freeMonthlyLimit) {
     return true;
   }
-  if (used === deps.config.freeMonthlyLimit) {
-    // Bump once so the "===" notice fires a single time this month.
-    deps.store.incrementUsage(groupId, when);
-    await pushText(
-      groupId,
-      `今月の無料枠（${deps.config.freeMonthlyLimit}件）に達しました。来月になると自動的にリセットされます。`,
-      deps.config.lineChannelAccessToken
-    ).catch(() => undefined);
-  }
+  await pushText(
+    groupId,
+    `今月の無料枠（${deps.config.freeMonthlyLimit}件）を超えているため、この資料は保存されませんでした。来月になると自動的にリセットされます。`,
+    deps.config.lineChannelAccessToken
+  ).catch(() => undefined);
   return false;
 }
 

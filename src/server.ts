@@ -133,7 +133,7 @@ app.get("/view/:token", (req, res) => {
   const items = store.listArchived(tenant.groupId).map((item) => ({
     kind: item.kind,
     title: item.title,
-    date: formatDateForFile(new Date(item.postedAt)),
+    date: formatDashboardDate(item.postedAt || item.createdAt),
     tags: item.tags || [],
     summary: item.summary || [],
     driveUrl: item.driveUrl || "",
@@ -143,6 +143,11 @@ app.get("/view/:token", (req, res) => {
   res.set("content-type", "text/html; charset=utf-8");
   res.send(renderDashboardHtml({ title: "資料アーカイブ", items }));
 });
+
+function formatDashboardDate(value: string | undefined): string {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? "" : formatDateForFile(date);
+}
 
 app.listen(config.port, () => {
   console.log(`LINE archive server listening on :${config.port}`);
