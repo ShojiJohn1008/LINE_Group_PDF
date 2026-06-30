@@ -10,6 +10,9 @@ export type TenantRecord = {
   refreshTokenEnc: string;
   rootFolderId: string;
   indexFileId: string;
+  // Dashboard spreadsheet id. Optional: tenants connected before the dashboard
+  // feature have none until they reconnect.
+  sheetId?: string;
   connectedAt: string;
   usageMonth: string;
   usageCount: number;
@@ -19,6 +22,7 @@ export type TenantConnection = {
   refreshToken: string;
   rootFolderId: string;
   indexFileId: string;
+  sheetId?: string;
 };
 
 // One archived artifact. A text message with several URLs produces several of
@@ -91,6 +95,7 @@ export function createMemoryStore(
         refreshTokenEnc: encryptSecret(connection.refreshToken, key),
         rootFolderId: connection.rootFolderId,
         indexFileId: connection.indexFileId,
+        sheetId: connection.sheetId ?? existing?.sheetId,
         connectedAt: existing?.connectedAt || new Date().toISOString(),
         usageMonth: existing?.usageMonth || formatYearMonth(new Date()),
         usageCount: existing?.usageCount || 0

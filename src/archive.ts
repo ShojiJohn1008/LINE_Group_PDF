@@ -12,6 +12,7 @@ import { downloadLineMessageContent } from "./line.js";
 import { pushText } from "./line-push.js";
 import { authedClient } from "./oauth.js";
 import { extractPdfText } from "./pdf.js";
+import { appendDashboardRow } from "./sheet.js";
 import { TenantRecord, TenantStore } from "./store.js";
 import { summarizeContent } from "./summary.js";
 import { formatDateForFile, formatYearMonth } from "./time.js";
@@ -119,6 +120,15 @@ async function archiveFile(
     title: message.fileName,
     kind: mimeType === "application/pdf" ? "pdf" : "file"
   });
+  await appendDashboard(deps, tenant, [
+    formatDateForFile(postedAt),
+    mimeType === "application/pdf" ? "PDF" : "ファイル",
+    message.fileName,
+    formatTagsInline(summary.tags),
+    summary.bullets.join(" / "),
+    uploaded.webViewLink ?? "",
+    ""
+  ]);
 }
 
 async function archiveUrl(
@@ -187,6 +197,40 @@ async function archiveUrl(
     title: page.title,
     kind: "url"
   });
+  await appendDashboard(deps, tenant, [
+    formatDateForFile(postedAt),
+    "URL",
+    page.title,
+    formatTagsInline(summary.tags),
+    summary.bullets.join(" / "),
+    uploaded.webViewLink ?? "",
+    url
+  ]);
+}
+
+// Best-effort dashboard row. A missing sheet (tenant connected before the
+// feature) or a transient Sheets error must never undo the archive.
+async function appendDashboard(
+  deps: ArchiveDeps,
+  tenant: TenantRecord,
+  row: string[]
+): Promise<void> {
+  if (!tenant.sheetId) {
+    return;
+  }
+  const refreshToken = deps.store.getRefreshToken(tenant.groupId);
+  if (!refreshToken) {
+    return;
+  }
+  try {
+    await appendDashboardRow(authedClient(deps.config, refreshToken), tenant.sheetId, row);
+  } catch (error) {
+    console.error("dashboard row append failed", error instanceof Error ? error.message : error);
+  }
+}
+
+function formatTagsInline(tags: string[]): string {
+  return tags.map((tag) => `#${tag.replace(/^#/, "")}`).join(" ");
 }
 
 // Strip the fragment so the same article with #anchor isn't re-archived.

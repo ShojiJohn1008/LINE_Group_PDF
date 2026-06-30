@@ -19,7 +19,8 @@ Google Driveには以下の構成を作ります。
 
 ```text
 LINE資料アーカイブ/
-  references.md
+  references.md       # 一覧Markdown（1資料1カード）
+  資料ダッシュボード     # Googleスプレッドシート（1資料1行・並べ替え/検索可）
   files/
     2026-06/
       2026-06-27_PDF_糖尿病診療ガイドラインの外来管理.pdf

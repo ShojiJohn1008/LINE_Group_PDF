@@ -12,6 +12,7 @@ import {
   verifyState
 } from "./oauth.js";
 import { provisionArchive } from "./drive.js";
+import { provisionDashboard } from "./sheet.js";
 import { createTenantStore, TenantStore } from "./store.js";
 import { createFirestoreTenantStore } from "./store-firestore.js";
 import { LineMessage, LineWebhookBody, LineWebhookEvent } from "./types.js";
@@ -98,7 +99,12 @@ app.get("/oauth/callback", async (req, res) => {
     const refreshToken = await exchangeCode(config, code);
     const auth = authedClient(config, refreshToken);
     const { rootFolderId, indexFileId } = await provisionArchive(auth);
-    store.upsertConnection(verified.groupId, { refreshToken, rootFolderId, indexFileId });
+    // Best-effort: a missing/disabled Sheets API must not fail the connection.
+    const sheetId = await provisionDashboard(auth, rootFolderId).catch((error) => {
+      console.error("dashboard provisioning skipped", formatErrorForLog(error));
+      return undefined;
+    });
+    store.upsertConnection(verified.groupId, { refreshToken, rootFolderId, indexFileId, sheetId });
 
     await pushText(
       verified.groupId,
@@ -172,7 +178,7 @@ async function sendGroupWelcome(event: LineWebhookEvent): Promise<void> {
     return;
   }
   const text = [
-    "はじめまして。このグループに共有されたPDF・URLを、Google Driveに自動保存して要約つきで索引化します。",
+    "はじめまして。このグループに共有されたPDF・URLを、Google Driveに自動保存して要約つきで索引化します。保存先には一覧Markdownと、並べ替え・検索できるスプレッドシート（ダッシュボード）ができます。",
     "",
     "まず保存先のGoogle Driveを接続してください（どなたか一度だけ）。",
     buildConnectUrl(config, groupId),

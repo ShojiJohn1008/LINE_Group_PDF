@@ -56,6 +56,7 @@ gate — always run it after code changes.
 | `line.ts` | Inbound: LINE HMAC-SHA256 signature verification + message content download. |
 | `line-push.ts` | Outbound: bot reply/push (connect link, completion + quota notices). |
 | `drive.ts` | Per-tenant Google Drive client (built from a refresh token), `drive.file` scope, `provisionArchive()` (create/own root folder + `references.md`), folder ensure/create, buffer upload, index append. |
+| `sheet.ts` | Google Sheets "dashboard" index (`資料ダッシュボード`): `provisionDashboard()` + `appendDashboardRow()`. Same `drive.file` scope (app-created file); all calls best-effort (never block archiving). Requires the Sheets API enabled. |
 | `summary.ts` | OpenAI summarization → `{ bullets, tags }`. Degrades gracefully (never throws) when key missing or API fails. |
 | `web.ts` | Fetch URL, extract readable text + build Markdown snapshot, plus `extractUrls()` regex. |
 | `pdf.ts` | PDF → normalized text. |
@@ -91,7 +92,8 @@ gate — always run it after code changes.
 - **Drive layout is fixed (inside the app-owned root folder of each tenant's Drive):**
   ```
   LINE資料アーカイブ/
-    references.md
+    references.md          # scannable Markdown index (one card per item)
+    資料ダッシュボード        # Google Sheet: one row per item (sort/filter/search)
     files/YYYY-MM/YYYY-MM-DD_PDF_<label>.pdf
     files/YYYY-MM/YYYY-MM-DD_FILE_<label>.<ext>
     web/YYYY-MM/YYYY-MM-DD_URL_<label>.md

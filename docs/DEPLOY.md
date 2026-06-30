@@ -21,6 +21,8 @@ LINE公式アカウント ──▶ Cloud Run（このアプリ, 固定URL, HTTP
 ## 前提（1回だけ）
 
 - GCPプロジェクトを用意し、**Firestore（ネイティブモード）**を有効化。
+- **Google Drive API** と **Google Sheets API** を有効化（Sheetsはダッシュボード用。
+  無効でも保存は続くが、スプレッドシートは作られない/埋まらない）。
 - Cloud Runの実行サービスアカウントに **Firestoreの読み書き権限**（例:
   `roles/datastore.user`）を付与。Cloud Run上では鍵ファイル不要（ADCで認証）。
 - Google OAuthクライアント（**Webアプリ型**）。リダイレクトURIは後述の固定URLに合わせる。
