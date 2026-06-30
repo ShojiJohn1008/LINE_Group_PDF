@@ -240,3 +240,102 @@ OAuth同意画面がテスト中で、ログインするGoogleアカウントが
 - ストアの非同期read-through化（複数インスタンスへスケールする場合）。
 - 「完全削除」版の送信取消（現状は注記のみ）。
 - ホスト型Webダッシュボード（公開/限定ビュー）。
+
+## 2026-07-01 Cloud Run本番接続・Firestore運用修正・無料枠UX
+
+Cloud Run常設環境を実際に立ち上げ、Google OAuth/LINE Webhook/Drive保存までを通した。
+あわせて、実運用で見えたFirestore database ID、Drive上の `references.md`、Web
+ダッシュボード、無料枠通知の問題を修正した。
+
+### GCP/Cloud Run設定
+
+- `gcloud` を導入し、プロジェクト `line-group-pdf` をCLIから操作できるようにした。
+- Cloud Run / Cloud Build / Artifact Registry / Firestore / Drive API / Sheets API /
+  Secret Manager を有効化。課金アカウント未リンクでAPI有効化に失敗したため、Billingを
+  紐づけて再実行。
+- Cloud Run実行サービスアカウント `line-archive-runner` を使用。
+  `roles/datastore.user` と Secret Managerアクセス権を付与。Cloud Run上では鍵ファイル
+  なしでADCを使う。
+- Secret ManagerにOAuthクライアントJSON、LINE secret/token、OpenAI API key、
+  `TENANT_ENCRYPTION_KEY` を保存し、Cloud Runから参照。
+- Cloud Run URLは以下で確定。OAuth redirect URIとLINE Webhook URLもこのURLに統一。
+
+```text
+PUBLIC_BASE_URL=https://line-archive-aq44p5jz2q-an.a.run.app
+OAuth redirect URI=https://line-archive-aq44p5jz2q-an.a.run.app/oauth/callback
+LINE Webhook URL=https://line-archive-aq44p5jz2q-an.a.run.app/line/webhook
+```
+
+### Firestore database ID問題
+
+FirestoreはNative mode / Standard Editionで作成したが、database IDを `(default)` ではなく
+`line-group-pdf` にした。`@google-cloud/firestore` はデフォルトでは `(default)` を見に行く
+ため、Cloud Run起動時に `5 NOT_FOUND` で落ちた。
+
+再発防止として以下を実装。
+
+- `FIRESTORE_DATABASE_ID` 環境変数を追加。
+- `createFirestoreTenantStore` で `{ projectId, databaseId }` を指定可能にした。
+- Cloud Runに `FIRESTORE_DATABASE_ID=line-group-pdf` を設定。
+- `docs/DEPLOY.md` に、database IDが `(default)` 以外の場合は必須と追記。
+
+### `references.md` が見えない問題
+
+接続後、Drive上にフォルダと `files/` はできるが `references.md` が見えない状態になった。
+Firestoreには `indexFileId` が保存されており、Drive APIで確認すると `references.md` は
+存在するが `trashed: true`、つまりゴミ箱に入っていた。
+
+対応:
+
+- 対象の `references.md` をDrive APIで復元。
+- 保存済み `indexFileId` のファイルがゴミ箱入りなら、`getOrCreateIndexFile` で復元してから
+  使うようにした。
+- ファイルが見つからない場合は `indexFileId` を捨て、通常の検索/作成フローへ戻す。
+
+### Webダッシュボードの500
+
+再接続後に `/view/:token` を開くと `Internal Server Error` になった。ログでは
+`RangeError: Invalid time value`。原因は、古い `archived` レコードには `postedAt` が無く、
+Webダッシュボードが `new Date(item.postedAt)` を日付整形しようとして落ちたこと。
+
+対応:
+
+- `postedAt` が無い既存データでは `createdAt` をフォールバックに使う。
+- それでも不正な日付なら空文字にし、ダッシュボード全体は落とさない。
+
+### 無料枠UX
+
+`FREE_MONTHLY_LIMIT=2` で検証。Cloud Runの環境変数を更新しない限り、ローカル `.env` の変更は
+Cloud Runへ自動反映されないことを確認した。
+
+当初の実装は、月次使用数が上限に達した最初の1件だけ通知し、それ以降は無言で保存しない
+仕様だった。LINE上では「処理されたのか、無視されたのか」が分かりにくいため、上限超過時は
+毎回メッセージを返すように変更した。
+
+現在の判定:
+
+```text
+usageCount < FREE_MONTHLY_LIMIT
+  → 保存する
+
+usageCount >= FREE_MONTHLY_LIMIT
+  → 保存しない
+  → 毎回LINEに超過メッセージを返す
+```
+
+### デプロイ/検証
+
+- Cloud Runへ複数回デプロイし、最新リビジョンで `/healthz/` と `/line/webhook` の疎通を確認。
+- Webダッシュボード `/view/:token` が200で開くことを確認。
+- 新規レコードでは `driveUrl` がFirestoreに保存され、ダッシュボードからDriveファイルへ移動
+  できることを確認。
+- `npm run typecheck` / `npm run build` は通過。
+
+### 残メモ
+
+- Cloud Runの `--set-env-vars` は通常環境変数の扱いに注意。更新時は既存の通常envをまとめて
+  指定する運用にする。
+- `/healthz` は環境によりGoogle Frontend側404になったため、疎通確認は末尾スラッシュ付きの
+  `/healthz/` を使う。
+- 古い `archived` レコードには `postedAt` / `driveUrl` / `summary` / `tags` が欠けるものがある。
+  新規保存分からは揃う。必要なら後でFirestoreの既存データ補完を行う。
