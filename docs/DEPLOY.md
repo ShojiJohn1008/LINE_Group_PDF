@@ -57,6 +57,7 @@ gcloud run deploy line-archive \
 | `PUBLIC_BASE_URL` | デプロイ後に確定するCloud RunのURL（下記4で設定） |
 | `TENANT_BACKEND` | `firestore` |
 | `GOOGLE_CLOUD_PROJECT` | （任意）プロジェクトid |
+| `FIRESTORE_DATABASE_ID` | （任意）Firestore database id。`(default)` 以外の場合は必須 |
 | `TENANT_ENCRYPTION_KEY` | `openssl rand -hex 32` |
 | `OPENAI_API_KEY` / `OPENAI_MODEL` | 要約用 |
 | `FREE_MONTHLY_LIMIT` | `50` |

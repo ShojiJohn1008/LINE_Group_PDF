@@ -26,7 +26,8 @@ const store: TenantStore =
   config.tenantBackend === "firestore"
     ? await createFirestoreTenantStore({
         encryptionKey: config.tenantEncryptionKey,
-        projectId: config.googleCloudProject
+        projectId: config.googleCloudProject,
+        databaseId: config.firestoreDatabaseId
       })
     : createTenantStore(config.tenantStorePath, config.tenantEncryptionKey);
 const deps: ArchiveDeps = { config, store };

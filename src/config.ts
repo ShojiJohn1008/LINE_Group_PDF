@@ -20,6 +20,8 @@ export type AppConfig = {
   tenantStorePath: string;
   // Firestore project id (optional; auto-detected from the runtime on Cloud Run).
   googleCloudProject?: string;
+  // Firestore database id (optional; defaults to "(default)" when omitted).
+  firestoreDatabaseId?: string;
   // 32-byte key (hex or base64) used to encrypt tenant refresh tokens at rest.
   tenantEncryptionKey: string;
   // Secret used to sign OAuth `state` tokens. Falls back to the LINE secret.
@@ -54,6 +56,7 @@ export function loadConfig(): AppConfig {
     tenantBackend: process.env.TENANT_BACKEND === "firestore" ? "firestore" : "json",
     tenantStorePath: process.env.TENANT_STORE_PATH || "data/tenants.json",
     googleCloudProject: process.env.GOOGLE_CLOUD_PROJECT || undefined,
+    firestoreDatabaseId: process.env.FIRESTORE_DATABASE_ID || undefined,
     tenantEncryptionKey: requireEnv("TENANT_ENCRYPTION_KEY"),
     stateSecret: process.env.OAUTH_STATE_SECRET || lineChannelSecret,
     freeMonthlyLimit: Number(process.env.FREE_MONTHLY_LIMIT || 50)

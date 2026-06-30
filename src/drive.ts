@@ -178,7 +178,29 @@ export async function uploadBuffer(
 
 export async function getOrCreateIndexFile(client: DriveClient): Promise<string> {
   if (client.indexFileId) {
-    return client.indexFileId;
+    try {
+      const existing = await client.drive.files.get({
+        fileId: client.indexFileId,
+        fields: "id, trashed",
+        supportsAllDrives: true
+      });
+      if (existing.data.id && !existing.data.trashed) {
+        return existing.data.id;
+      }
+      if (existing.data.id && existing.data.trashed) {
+        const restored = await client.drive.files.update({
+          fileId: existing.data.id,
+          requestBody: { trashed: false },
+          fields: "id",
+          supportsAllDrives: true
+        });
+        if (restored.data.id) {
+          return restored.data.id;
+        }
+      }
+    } catch {
+      client.indexFileId = undefined;
+    }
   }
 
   const existing = await client.drive.files.list({

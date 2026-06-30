@@ -17,10 +17,14 @@ import {
 export async function createFirestoreTenantStore(opts: {
   encryptionKey: string;
   projectId?: string;
+  databaseId?: string;
   tenantsCollection?: string;
   archivedCollection?: string;
 }): Promise<TenantStore> {
-  const db = new Firestore(opts.projectId ? { projectId: opts.projectId } : {});
+  const db =
+    opts.projectId || opts.databaseId
+      ? new Firestore({ projectId: opts.projectId, databaseId: opts.databaseId })
+      : new Firestore();
   const tenantsCol = db.collection(opts.tenantsCollection || "tenants");
   const archivedCol = db.collection(opts.archivedCollection || "archived");
 
