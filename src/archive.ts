@@ -252,29 +252,34 @@ function tenantDrive(config: AppConfig, store: TenantStore, tenant: TenantRecord
   return createDriveClient(auth, tenant.rootFolderId, tenant.indexFileId);
 }
 
+// One scannable card per item: icon + title heading, then a single compact meta
+// line (date ・ tags ・ links), then the summary. The Drive file id is kept as a
+// hidden HTML comment (invisible when rendered) so unsend can still locate the
+// entry without cluttering the view.
 function renderArchiveEntry(entry: ArchiveEntry): string {
   const date = formatDateForFile(entry.postedAt);
+  const tags = entry.tags.length
+    ? entry.tags.map((tag) => `#${tag.replace(/^#/, "")}`).join(" ")
+    : "タグなし";
+  const links = [
+    entry.driveUrl ? `[📁保存先](${entry.driveUrl})` : undefined,
+    entry.originalUrl ? `[🔗元URL](${entry.originalUrl})` : undefined
+  ].filter((part): part is string => part !== undefined);
+  const meta = [date, tags, ...links].join(" ・ ");
   const summaryLines = entry.summary.length
-    ? entry.summary.map((item) => `  - ${item}`).join("\n")
-    : "  - 要約は未生成です。";
-  const tagLine = entry.tags.length ? entry.tags.map((tag) => `#${tag.replace(/^#/, "")}`).join(" ") : "なし";
-  const notes = entry.notes?.length ? `\n- 注意:\n${entry.notes.map((note) => `  - ${note}`).join("\n")}` : "";
+    ? entry.summary.map((item) => `- ${item}`).join("\n")
+    : "- 要約は未生成です。";
+  const notes = entry.notes?.length
+    ? entry.notes.map((note) => `> ⚠️ ${note}`).join("\n")
+    : undefined;
 
   return [
-    `## ${date}`,
+    `### ${kindIcon(entry.kind)} ${entry.title}`,
+    meta,
     "",
-    `### ${kindLabel(entry.kind)}: ${entry.title}`,
-    "",
-    `- 投稿日時: ${entry.postedAt.toISOString()}`,
-    `- 投稿者: ${entry.senderId}`,
-    `- グループ: ${entry.groupId}`,
-    entry.originalUrl ? `- 元URL: ${entry.originalUrl}` : undefined,
-    entry.driveUrl ? `- 保存先: ${entry.driveUrl}` : undefined,
-    entry.driveFileId ? `- Drive file ID: ${entry.driveFileId}` : undefined,
-    `- タグ: ${tagLine}`,
-    "- 要約:",
     summaryLines,
-    notes
+    notes,
+    `<!-- id:${entry.driveFileId ?? ""} -->`
   ]
     .filter((line): line is string => line !== undefined)
     .join("\n");
@@ -329,14 +334,14 @@ function cleanupLabel(input: string): string {
     .trim();
 }
 
-function kindLabel(kind: ArchiveEntry["kind"]): string {
+function kindIcon(kind: ArchiveEntry["kind"]): string {
   if (kind === "pdf") {
-    return "PDF";
+    return "📄";
   }
   if (kind === "url") {
-    return "URL";
+    return "🔗";
   }
-  return "ファイル";
+  return "📎";
 }
 
 function isTextMessage(message: LineMessage): message is Extract<LineMessage, { type: "text" }> {

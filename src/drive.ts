@@ -249,8 +249,11 @@ export async function annotateUnsent(client: DriveClient, driveFileIds: string[]
   const mark = "（送信取消済み）";
 
   for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(/^- Drive file ID:\s*(.+?)\s*$/);
-    if (!match || !ids.has(match[1])) {
+    // Current format: hidden `<!-- id:X -->`. Legacy format: `- Drive file ID: X`.
+    const hidden = lines[i].match(/^<!--\s*id:(.+?)\s*-->$/);
+    const legacy = lines[i].match(/^- Drive file ID:\s*(.+?)\s*$/);
+    const id = hidden?.[1] ?? legacy?.[1];
+    if (!id || !ids.has(id)) {
       continue;
     }
     for (let j = i; j >= 0; j--) {
