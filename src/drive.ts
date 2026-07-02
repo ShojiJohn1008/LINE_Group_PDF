@@ -176,6 +176,15 @@ export async function uploadBuffer(
   };
 }
 
+// Metadata-only rename (used after the summary produces a better content label).
+export async function renameFile(client: DriveClient, fileId: string, name: string): Promise<void> {
+  await client.drive.files.update({
+    fileId,
+    requestBody: { name },
+    supportsAllDrives: true
+  });
+}
+
 export async function getOrCreateIndexFile(client: DriveClient): Promise<string> {
   if (client.indexFileId) {
     try {

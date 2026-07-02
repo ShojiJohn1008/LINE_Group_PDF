@@ -12,6 +12,7 @@ import {
   verifyState
 } from "./oauth.js";
 import { provisionArchive } from "./drive.js";
+import { createKeyedQueue } from "./queue.js";
 import { provisionDashboard } from "./sheet.js";
 import { createTenantStore, TenantStore } from "./store.js";
 import { createFirestoreTenantStore } from "./store-firestore.js";
@@ -31,6 +32,7 @@ const store: TenantStore =
       })
     : createTenantStore(config.tenantStorePath, config.tenantEncryptionKey);
 const deps: ArchiveDeps = { config, store };
+const eventQueue = createKeyedQueue();
 
 const app = express();
 
@@ -66,7 +68,10 @@ app.post("/line/webhook", express.raw({ type: "application/json" }), (req, res) 
   res.status(200).json({ ok: true });
 
   for (const event of body.events || []) {
-    handleEvent(event).catch((error) => {
+    // Serialize per group: index appends are read-modify-write, so concurrent
+    // events in the same group would overwrite each other's entries.
+    const key = event.source?.groupId || event.source?.roomId || event.source?.userId || "global";
+    eventQueue.run(key, () => handleEvent(event)).catch((error) => {
       console.error("Failed to handle LINE event", {
         eventType: event.type,
         messageType: event.message?.type,
