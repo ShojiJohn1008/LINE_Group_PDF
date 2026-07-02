@@ -6,6 +6,7 @@ import {
   createDriveClient,
   DriveClient,
   ensureFolder,
+  renameFile,
   uploadBuffer
 } from "./drive.js";
 import { downloadLineMessageContent } from "./line.js";
@@ -76,28 +77,59 @@ async function archiveFile(
 
   const content = await downloadLineMessageContent(message.id, deps.config.lineChannelAccessToken);
   const mimeType = guessMimeType(message.fileName);
-  const text = mimeType === "application/pdf" ? await safeExtractPdfText(content) : "";
-  const summary = await summarizeContent({
-    apiKey: deps.config.openAiApiKey,
-    model: deps.config.openAiModel,
-    title: message.fileName,
-    sourceKind: mimeType === "application/pdf" ? "pdf" : "file",
-    text
-  });
-  const filesRootFolderId = await ensureFolder(drive, "files");
-  const filesMonthFolderId = await ensureFolder(drive, formatYearMonth(postedAt), filesRootFolderId);
-  const fileName = buildStoredFileName({
+  const isPdf = mimeType === "application/pdf";
+  const extension = path.extname(message.fileName) || ".bin";
+
+  // Save-first: upload under a provisional name so the artifact lands in Drive
+  // immediately; the (slow) summary runs in parallel and refines things after.
+  const summaryPromise = (async () => {
+    const text = isPdf ? await safeExtractPdfText(content) : "";
+    const summary = await summarizeContent({
+      apiKey: deps.config.openAiApiKey,
+      model: deps.config.openAiModel,
+      title: message.fileName,
+      sourceKind: isPdf ? "pdf" : "file",
+      text
+    });
+    return { text, summary };
+  })();
+
+  const provisionalName = buildStoredFileName({
     date: postedAt,
-    kind: mimeType === "application/pdf" ? "PDF" : "FILE",
-    label: bestContentLabel(summary.bullets, message.fileName),
-    extension: path.extname(message.fileName) || ".bin"
+    kind: isPdf ? "PDF" : "FILE",
+    label: bestContentLabel([], message.fileName),
+    extension
   });
-  const uploaded = await uploadBuffer(drive, filesMonthFolderId, fileName, mimeType, content);
+  const uploaded = await uploadToMonthFolder(
+    drive,
+    groupId,
+    "files",
+    postedAt,
+    provisionalName,
+    mimeType,
+    content
+  );
+  deps.store.incrementUsage(groupId, postedAt);
+
+  const { text, summary } = await summaryPromise;
+
+  // Once the summary is in, prefer its first bullet as the file's content label.
+  const finalName = buildStoredFileName({
+    date: postedAt,
+    kind: isPdf ? "PDF" : "FILE",
+    label: bestContentLabel(summary.bullets, message.fileName),
+    extension
+  });
+  if (finalName !== provisionalName) {
+    await renameFile(drive, uploaded.id, finalName).catch((error) =>
+      console.error("rename after summary failed", error instanceof Error ? error.message : error)
+    );
+  }
 
   await appendToIndex(
     drive,
     renderArchiveEntry({
-      kind: mimeType === "application/pdf" ? "pdf" : "file",
+      kind: isPdf ? "pdf" : "file",
       postedAt,
       senderId: event.source?.userId || "unknown",
       groupId,
@@ -112,13 +144,12 @@ async function archiveFile(
     })
   );
 
-  deps.store.incrementUsage(groupId, postedAt);
   deps.store.recordArchive(groupId, {
     messageId: message.id,
     dedupKey,
     driveFileId: uploaded.id,
     title: message.fileName,
-    kind: mimeType === "application/pdf" ? "pdf" : "file",
+    kind: isPdf ? "pdf" : "file",
     postedAt: postedAt.toISOString(),
     tags: summary.tags,
     summary: summary.bullets,
@@ -127,7 +158,7 @@ async function archiveFile(
   });
   await appendDashboard(deps, tenant, [
     formatDateForFile(postedAt),
-    mimeType === "application/pdf" ? "PDF" : "ファイル",
+    isPdf ? "PDF" : "ファイル",
     message.fileName,
     formatTagsInline(summary.tags),
     summary.bullets.join(" / "),
@@ -155,28 +186,47 @@ async function archiveUrl(
   }
 
   const page = await readWebPage(url);
-  const summary = await summarizeContent({
+
+  // Save-first: snapshot goes to Drive under a provisional name; the summary
+  // runs in parallel and the name/index/dashboard follow once it lands.
+  const summaryPromise = summarizeContent({
     apiKey: deps.config.openAiApiKey,
     model: deps.config.openAiModel,
     title: page.title,
     sourceKind: "url",
     text: page.text
   });
-  const webRootFolderId = await ensureFolder(drive, "web");
-  const webMonthFolderId = await ensureFolder(drive, formatYearMonth(postedAt), webRootFolderId);
-  const snapshotName = buildStoredFileName({
+
+  const provisionalName = buildStoredFileName({
+    date: postedAt,
+    kind: "URL",
+    label: bestContentLabel([], page.title),
+    extension: ".md"
+  });
+  const uploaded = await uploadToMonthFolder(
+    drive,
+    groupId,
+    "web",
+    postedAt,
+    provisionalName,
+    "text/markdown",
+    Buffer.from(page.markdownSnapshot, "utf8")
+  );
+  deps.store.incrementUsage(groupId, postedAt);
+
+  const summary = await summaryPromise;
+
+  const finalName = buildStoredFileName({
     date: postedAt,
     kind: "URL",
     label: bestContentLabel(summary.bullets, page.title),
     extension: ".md"
   });
-  const uploaded = await uploadBuffer(
-    drive,
-    webMonthFolderId,
-    snapshotName,
-    "text/markdown",
-    Buffer.from(page.markdownSnapshot, "utf8")
-  );
+  if (finalName !== provisionalName) {
+    await renameFile(drive, uploaded.id, finalName).catch((error) =>
+      console.error("rename after summary failed", error instanceof Error ? error.message : error)
+    );
+  }
 
   await appendToIndex(
     drive,
@@ -194,7 +244,6 @@ async function archiveUrl(
     })
   );
 
-  deps.store.incrementUsage(groupId, postedAt);
   deps.store.recordArchive(groupId, {
     messageId: event.message?.id ?? "unknown",
     dedupKey,
@@ -291,6 +340,46 @@ async function withinQuota(
     deps.config.lineChannelAccessToken
   ).catch(() => undefined);
   return false;
+}
+
+// Folder ids are stable, so cache them per tenant/month and skip the two Drive
+// list calls per item. If a cached id has gone stale (folder trashed by the
+// user), invalidate and re-resolve once before giving up.
+const folderIdCache = new Map<string, string>();
+
+async function uploadToMonthFolder(
+  drive: DriveClient,
+  groupId: string,
+  top: "files" | "web",
+  postedAt: Date,
+  name: string,
+  mimeType: string,
+  body: Buffer
+): Promise<{ id: string; webViewLink?: string }> {
+  const month = formatYearMonth(postedAt);
+  const cacheKey = `${groupId}:${drive.rootFolderId}:${top}:${month}`;
+
+  const resolveFolder = async (): Promise<string> => {
+    const topId = await ensureFolder(drive, top);
+    const monthId = await ensureFolder(drive, month, topId);
+    folderIdCache.set(cacheKey, monthId);
+    return monthId;
+  };
+
+  const cached = folderIdCache.get(cacheKey);
+  if (!cached) {
+    return uploadBuffer(drive, await resolveFolder(), name, mimeType, body);
+  }
+  try {
+    return await uploadBuffer(drive, cached, name, mimeType, body);
+  } catch (error) {
+    console.error("upload with cached folder failed; re-resolving", {
+      cacheKey,
+      error: error instanceof Error ? error.message : error
+    });
+    folderIdCache.delete(cacheKey);
+    return uploadBuffer(drive, await resolveFolder(), name, mimeType, body);
+  }
 }
 
 function tenantDrive(config: AppConfig, store: TenantStore, tenant: TenantRecord): DriveClient {

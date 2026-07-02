@@ -53,6 +53,7 @@ gate — always run it after code changes.
 | `oauth.ts` | OAuth state sign/verify (HMAC), Google auth-URL build, code→refresh-token exchange, and `authedClient()` (OAuth2 client primed with a tenant refresh token). |
 | `store.ts` | Tenant store behind a `TenantStore` interface: `groupId → { refreshToken(encrypted), rootFolderId, indexFileId, usage }` plus archived-item tracking (dedup + unsend). Shared in-memory engine (`createMemoryStore`) + JSON-file backend (`createTenantStore`). AES-256-GCM at rest. Monthly usage counter (JST). |
 | `store-firestore.ts` | Firestore backend (`createFirestoreTenantStore`) for Cloud Run. Same engine, write-through per document; single-instance (hydrated cache). |
+| `queue.ts` | `createKeyedQueue()` — per-key (= per-group) serialization of async tasks. All webhook events run through it. |
 | `line.ts` | Inbound: LINE HMAC-SHA256 signature verification + message content download. |
 | `line-push.ts` | Outbound: bot reply/push (connect link, completion + quota notices). |
 | `drive.ts` | Per-tenant Google Drive client (built from a refresh token), `drive.file` scope, `provisionArchive()` (create/own root folder + `references.md`), folder ensure/create, buffer upload, index append. |
@@ -116,6 +117,18 @@ gate — always run it after code changes.
   in the user's Drive).
 - **All Drive calls pass `supportsAllDrives: true`** (and list calls
   `includeItemsFromAllDrives: true`). Keep this for shared-drive compatibility.
+- **Events are serialized per group** (`queue.ts`). `references.md` appends are
+  read-modify-write (download → append → re-upload), so two concurrent events in
+  the same group would silently drop one entry. Every webhook event goes through
+  `eventQueue.run(groupId, ...)` — do not bypass it when adding handlers, and do
+  not make index writes concurrent within a group.
+- **Save-first pipeline:** upload lands in Drive under a provisional name (from
+  the original title/filename) while the OpenAI summary runs in parallel; the
+  file is then renamed to the summary label and index/sheet/dashboard follow.
+  Keep the artifact save ahead of the slow summary — don't reorder it back.
+- **Folder ids are cached per tenant/month** (`uploadToMonthFolder` in
+  `archive.ts`) with invalidate-and-retry-once on upload failure. Don't add
+  per-item `ensureFolder` round-trips back.
 - **Resilience by design:** the webhook ACKs `200` before processing; per-event
   failures are caught and logged, not propagated. Summarization and PDF
   extraction failures degrade to placeholder text but still archive the file.
