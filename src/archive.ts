@@ -52,8 +52,35 @@ export async function archiveEvent(event: LineWebhookEvent, deps: ArchiveDeps): 
   if (isTextMessage(event.message)) {
     const urls = extractUrls(event.message.text);
     for (const url of urls) {
+      // Sharing a PDF from Safari/apps sends the direct file URL *and* the file
+      // itself as separate messages. Skip the URL: the file message archives the
+      // same document properly (with PDF text extraction), avoiding a duplicate.
+      if (isDirectFileUrl(url)) {
+        console.log("skip direct-file url (archived via file message)", { groupId, url });
+        continue;
+      }
       await archiveUrl(event, deps, tenant, groupId, drive, url);
     }
+  }
+}
+
+// URLs whose path points straight at a downloadable document. LINE's share sheet
+// attaches the file alongside the link, so we let the file message handle it.
+const DIRECT_FILE_EXTENSIONS = new Set([
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".xls",
+  ".xlsx"
+]);
+
+function isDirectFileUrl(url: string): boolean {
+  try {
+    return DIRECT_FILE_EXTENSIONS.has(path.extname(new URL(url).pathname).toLowerCase());
+  } catch {
+    return false;
   }
 }
 

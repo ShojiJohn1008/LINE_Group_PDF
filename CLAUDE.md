@@ -185,6 +185,10 @@ source of 404s. `ngrok http 3000` is used to expose the local server.
 - No OCR for scanned PDFs; long PDFs are summarized from the leading text only
   (clipped to 24k chars in `summary.ts`).
 - History before the bot joined the group is unreachable.
+- URLs pointing straight at a document (`.pdf/.docx/.pptx/.xlsx/...`,
+  `isDirectFileUrl` in `archive.ts`) are **not** archived as web snapshots:
+  sharing a PDF from Safari sends both the file URL and the file, so the file
+  message handles it and the URL is skipped to avoid a duplicate.
 - Dedup is per-tenant by URL (fragment-stripped) / by `fileName:fileSize`
   (`isArchived`/`recordArchive` in the store). Unsend is **non-destructive**:
   `handleUnsend` annotates the matching `references.md` entries with
