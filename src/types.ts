@@ -48,5 +48,7 @@ export type ArchiveEntry = {
   driveFileId?: string;
   summary: string[];
   tags: string[];
+  category?: string;
+  resourceType?: string;
   notes?: string[];
 };

@@ -9,7 +9,7 @@ import type { OAuthClient } from "./drive.js";
 // transient error must never block archiving (the artifact is already saved).
 
 export const DASHBOARD_SHEET_NAME = "資料ダッシュボード";
-const HEADER = ["日付", "種別", "タイトル", "タグ", "要約", "保存先", "元URL"];
+const HEADER = ["日付", "種別", "タイトル", "タグ", "要約", "保存先", "元URL", "カテゴリ", "タイプ"];
 
 // Create (or reuse) the dashboard spreadsheet in the archive folder and return
 // its id. The file itself is created via the Drive API (always works); the

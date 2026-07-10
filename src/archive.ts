@@ -165,6 +165,8 @@ async function archiveFile(
       driveFileId: uploaded.id,
       summary: summary.bullets,
       tags: summary.tags,
+      category: summary.category,
+      resourceType: summary.type,
       notes: text
         ? undefined
         : ["PDF本文を抽出できない場合は、スキャンPDFまたは画像主体の資料の可能性があります。"]
@@ -181,7 +183,9 @@ async function archiveFile(
     tags: summary.tags,
     summary: summary.bullets,
     driveUrl: uploaded.webViewLink ?? "",
-    originalUrl: ""
+    originalUrl: "",
+    category: summary.category,
+    resourceType: summary.type
   });
   await appendDashboard(deps, tenant, [
     formatDateForFile(postedAt),
@@ -190,7 +194,9 @@ async function archiveFile(
     formatTagsInline(summary.tags),
     summary.bullets.join(" / "),
     uploaded.webViewLink ?? "",
-    ""
+    "",
+    summary.category,
+    summary.type
   ]);
 }
 
@@ -267,7 +273,9 @@ async function archiveUrl(
       driveUrl: uploaded.webViewLink,
       driveFileId: uploaded.id,
       summary: summary.bullets,
-      tags: summary.tags
+      tags: summary.tags,
+      category: summary.category,
+      resourceType: summary.type
     })
   );
 
@@ -281,7 +289,9 @@ async function archiveUrl(
     tags: summary.tags,
     summary: summary.bullets,
     driveUrl: uploaded.webViewLink ?? "",
-    originalUrl: url
+    originalUrl: url,
+    category: summary.category,
+    resourceType: summary.type
   });
   await appendDashboard(deps, tenant, [
     formatDateForFile(postedAt),
@@ -290,7 +300,9 @@ async function archiveUrl(
     formatTagsInline(summary.tags),
     summary.bullets.join(" / "),
     uploaded.webViewLink ?? "",
-    url
+    url,
+    summary.category,
+    summary.type
   ]);
 }
 
@@ -431,7 +443,11 @@ function renderArchiveEntry(entry: ArchiveEntry): string {
     entry.driveUrl ? `[📁保存先](${entry.driveUrl})` : undefined,
     entry.originalUrl ? `[🔗元URL](${entry.originalUrl})` : undefined
   ].filter((part): part is string => part !== undefined);
-  const meta = [date, tags, ...links].join(" ・ ");
+  const classification = [
+    entry.category ? `**${entry.category}**` : undefined,
+    entry.resourceType
+  ].filter((part): part is string => Boolean(part));
+  const meta = [...classification, date, tags, ...links].join(" ・ ");
   const summaryLines = entry.summary.length
     ? entry.summary.map((item) => `- ${item}`).join("\n")
     : "- 要約は未生成です。";

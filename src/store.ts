@@ -43,6 +43,10 @@ export type ArchivedItem = {
   summary: string[];
   driveUrl: string;
   originalUrl: string;
+  // Knowledge-base classification (see categories.ts). Optional: items archived
+  // before classification existed have none.
+  category?: string;
+  resourceType?: string;
   unsent: boolean;
   createdAt: string;
 };
@@ -58,6 +62,8 @@ export type ArchivedInput = {
   summary: string[];
   driveUrl: string;
   originalUrl: string;
+  category: string;
+  resourceType: string;
 };
 
 export type TenantStore = {
@@ -175,6 +181,8 @@ export function createMemoryStore(
         summary: item.summary,
         driveUrl: item.driveUrl,
         originalUrl: item.originalUrl,
+        category: item.category,
+        resourceType: item.resourceType,
         unsent: false,
         createdAt: new Date().toISOString()
       };

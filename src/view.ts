@@ -11,6 +11,8 @@ export type DashItem = {
   summary: string[];
   driveUrl: string;
   originalUrl: string;
+  category: string;
+  type: string;
   unsent: boolean;
 };
 
@@ -35,6 +37,9 @@ export function renderDashboardHtml(params: { title: string; items: DashItem[] }
   .count { color: #6b7280; font-size: 13px; font-weight: normal; }
   .controls { display: flex; gap: 8px; flex-wrap: wrap; }
   input[type=search] { flex: 1 1 220px; min-width: 0; padding: 8px 10px; border: 1px solid #cbd2d9; border-radius: 8px; font-size: 15px; }
+  select { padding: 8px 10px; border: 1px solid #cbd2d9; border-radius: 8px; font-size: 14px; background: #fff; max-width: 48%; }
+  .cat { font-size: 12px; color: #0f766e; font-weight: 600; }
+  .type { font-size: 12px; color: #6b7280; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip { padding: 6px 10px; border: 1px solid #cbd2d9; border-radius: 999px; background: #fff; font-size: 13px; cursor: pointer; }
   .chip.active { background: #2563eb; color: #fff; border-color: #2563eb; }
@@ -58,6 +63,8 @@ export function renderDashboardHtml(params: { title: string; items: DashItem[] }
   <h1>${title} <span class="count" id="count"></span></h1>
   <div class="controls">
     <input type="search" id="q" placeholder="タイトル・要約・タグで検索" autocomplete="off" />
+    <select id="category"><option value="">カテゴリ: すべて</option></select>
+    <select id="type"><option value="">タイプ: すべて</option></select>
     <div class="chips" id="kinds">
       <span class="chip active" data-kind="">すべて</span>
       <span class="chip" data-kind="pdf">📄 PDF</span>
@@ -70,14 +77,25 @@ export function renderDashboardHtml(params: { title: string; items: DashItem[] }
 <script>
 const ITEMS = ${data};
 const ICON = { pdf: "📄", url: "🔗", file: "📎" };
-let q = "", kind = "";
+let q = "", kind = "", cat = "", type = "";
 
 function safeUrl(u) { return typeof u === "string" && /^https?:\\/\\//i.test(u) ? u : ""; }
 
+function fillSelect(id, values, label) {
+  const sel = document.getElementById(id);
+  for (const v of values) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = v;
+    sel.appendChild(o);
+  }
+}
+
 function matches(it) {
   if (kind && it.kind !== kind) return false;
+  if (cat && it.category !== cat) return false;
+  if (type && it.type !== type) return false;
   if (!q) return true;
-  const hay = (it.title + " " + (it.summary||[]).join(" ") + " " + (it.tags||[]).join(" ")).toLowerCase();
+  const hay = (it.title + " " + (it.summary||[]).join(" ") + " " + (it.tags||[]).join(" ") + " " + (it.category||"")).toLowerCase();
   return hay.includes(q);
 }
 
@@ -111,7 +129,9 @@ function render() {
 
     const meta = document.createElement("div");
     meta.className = "meta";
-    meta.textContent = it.date || "";
+    if (it.category) { const c = document.createElement("span"); c.className = "cat"; c.textContent = it.category; meta.appendChild(c); meta.appendChild(document.createTextNode(" ・ ")); }
+    if (it.type) { const ty = document.createElement("span"); ty.className = "type"; ty.textContent = it.type; meta.appendChild(ty); meta.appendChild(document.createTextNode(" ・ ")); }
+    meta.appendChild(document.createTextNode(it.date || ""));
     card.appendChild(meta);
 
     if ((it.tags||[]).length) {
@@ -148,7 +168,12 @@ function render() {
   }
 }
 
+fillSelect("category", Array.from(new Set(ITEMS.map((it) => it.category).filter(Boolean))).sort());
+fillSelect("type", Array.from(new Set(ITEMS.map((it) => it.type).filter(Boolean))).sort());
+
 document.getElementById("q").addEventListener("input", (e) => { q = e.target.value.trim().toLowerCase(); render(); });
+document.getElementById("category").addEventListener("change", (e) => { cat = e.target.value; render(); });
+document.getElementById("type").addEventListener("change", (e) => { type = e.target.value; render(); });
 document.getElementById("kinds").addEventListener("click", (e) => {
   const chip = e.target.closest(".chip"); if (!chip) return;
   kind = chip.getAttribute("data-kind") || "";

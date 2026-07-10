@@ -143,6 +143,8 @@ app.get("/view/:token", (req, res) => {
     summary: item.summary || [],
     driveUrl: item.driveUrl || "",
     originalUrl: item.originalUrl || "",
+    category: item.category || "",
+    type: item.resourceType || "",
     unsent: item.unsent
   }));
   res.set("content-type", "text/html; charset=utf-8");
